@@ -39,6 +39,16 @@ pub struct Http {
     token: Option<String>,
 }
 
+/// Why ArtCraft's release feed couldn't be read.
+#[derive(Debug)]
+pub struct FeedError {
+    pub why: String,
+    /// The server answered HTTP 429 Too Many Requests.
+    pub throttled: bool,
+    /// The server's `Retry-After`, in seconds.
+    pub retry_after: Option<i64>,
+}
+
 impl Http {
     pub fn new() -> Result<Self, String> {
         let roots = os_roots()?;
@@ -121,11 +131,15 @@ impl Http {
     }
 
     /// ArtCraft's release feed, or why it couldn't be read. Never takes more than ~10 seconds.
-    pub fn get_feed(&self, url: &str) -> Result<String, String> {
-        let mut resp = self.feed.get(url).header("Accept", "application/json").call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
+    pub fn get_feed(&self, url: &str) -> Result<String, FeedError> {
+        let failed = |why: String| FeedError { why, throttled: false, retry_after: None };
+        let mut resp =
+            self.feed.get(url).header("Accept", "application/json").call().map_err(|e| failed(format!("couldn't reach {} ({e})", host(url))))?;
+        // Seconds only; an HTTP date falls back to our own backoff.
+        let retry_after = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|r| r.trim().parse::<i64>().ok());
         match resp.status().as_u16() {
-            200 => resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map_err(|e| format!("unreadable answer ({e})")),
-            s => Err(format!("{} answered HTTP {s}", host(url))),
+            200 => resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map_err(|e| failed(format!("unreadable answer ({e})"))),
+            s => Err(FeedError { why: format!("{} answered HTTP {s}", host(url)), throttled: s == 429, retry_after }),
         }
     }
 

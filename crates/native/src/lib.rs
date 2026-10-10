@@ -9,6 +9,7 @@
 
 pub mod backend;
 pub mod detect;
+pub mod feed_throttle;
 pub mod http;
 pub mod install;
 pub mod login;

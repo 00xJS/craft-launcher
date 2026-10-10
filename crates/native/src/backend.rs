@@ -14,6 +14,7 @@ use artcraft_launcher_core::protocol::{
 use artcraft_launcher_core::release::{Asset, Release};
 use artcraft_launcher_core::{CraftApp, Installed, PackageKind, SUITE, version};
 
+use crate::feed_throttle::{self, FeedThrottle, Outcome};
 use crate::http::{self, Http, Stop};
 use crate::install::{self, Job};
 use crate::manifest::Manifest;
@@ -28,9 +29,12 @@ const FRESH_FOR: i64 = 4 * 60;
 const GITHUB_FALLBACK_EVERY: i64 = 60 * 60;
 /// Until every app has loaded once, GitHub may be asked a little more eagerly.
 const EARLY_GITHUB_EVERY: i64 = 5 * 60;
-/// Tries at the feed per check (after the very first poll), and the waits between them.
+/// Tries at the feed per check (after the very first poll). The pause between tries is the
+/// [`FeedThrottle`]'s: seconds during the first load, so a check retries; a minute or more after
+/// that, so a check then tries once and the retries come from the next checks.
 const FEED_ATTEMPTS: usize = 3;
-const FEED_RETRY_WAITS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(3)];
+/// The longest a check waits on the [`FeedThrottle`] before carrying on without the feed.
+const MAX_THROTTLE_WAIT: i64 = 10;
 /// After everything has loaded, the feed counts as seriously failed (and GitHub takes over)
 /// only after this many checks in a row without an answer…
 const SERIOUS_FEED_FAILURES: u32 = 3;
@@ -65,6 +69,8 @@ struct Shared {
     feed_failures: Mutex<u32>,
     /// When the feed last answered (Unix seconds).
     feed_ok_at: Mutex<Option<i64>>,
+    /// How often ArtCraft's API may be called.
+    feed_throttle: Mutex<FeedThrottle>,
 }
 
 impl Shared {
@@ -117,6 +123,7 @@ impl NativeBackend {
             loaded: AtomicBool::new(false),
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
+            feed_throttle: Mutex::new(FeedThrottle::load(&paths.feed_throttle(), crate::now())),
             last_check: Mutex::new(None),
         });
         let backend = Self { shared, paths, http, source, platform: native_platform(), self_install: crate::self_update::current() };
@@ -496,20 +503,25 @@ fn feed_and_fallback(http: &Http, paths: &Paths, shared: &Shared) -> (Option<Fee
     let loaded = shared.loaded.load(Ordering::SeqCst);
     let first_time = !loaded && saved.is_none();
     let attempts = if first_time { 1 } else { FEED_ATTEMPTS };
-    let fresh = fetch_feed(http, paths, attempts);
+    let fetched = fetch_feed(http, paths, &feed_url(), &shared.feed_throttle, attempts);
     let now = crate::now();
-    let failures = {
+    let (fresh, answered, failures) = {
         let mut failures = shared.feed_failures.lock().unwrap_or_else(PoisonError::into_inner);
-        if fresh.is_some() {
-            *failures = 0;
-            *shared.feed_ok_at.lock().unwrap_or_else(PoisonError::into_inner) = Some(now);
-        } else {
-            *failures = failures.saturating_add(1);
+        match fetched {
+            FeedFetch::Answered(feed) => {
+                *failures = 0;
+                *shared.feed_ok_at.lock().unwrap_or_else(PoisonError::into_inner) = Some(now);
+                (Some(feed), true, 0)
+            }
+            FeedFetch::Failed => {
+                *failures = failures.saturating_add(1);
+                (None, false, *failures)
+            }
+            // Not asked this time: things stand as the last request left them.
+            FeedFetch::Held => (None, *failures == 0 && saved.is_some(), *failures),
         }
-        *failures
     };
     let ok_at = *shared.feed_ok_at.lock().unwrap_or_else(PoisonError::into_inner);
-    let answered = fresh.is_some();
     let fallback = decide_fallback(answered, loaded, first_time, failures, ok_at, now);
     (fresh.or(saved), fallback)
 }
@@ -565,28 +577,68 @@ fn feed_repo(feed: Option<&Feed>, app: &CraftApp) -> String {
     feed.map_or_else(|| app.repo.to_string(), |f| f.repo_for(app))
 }
 
-/// Asks ArtCraft's release feed up to `attempts` times (waiting 1 s, then 3 s, between tries),
-/// saving a good answer. `None` when it never answered with something readable.
-fn fetch_feed(http: &Http, paths: &Paths, attempts: usize) -> Option<Feed> {
-    let url = feed_url();
+/// What came of asking the feed during one check.
+enum FeedFetch {
+    Answered(Feed),
+    /// Asked, without a good answer.
+    Failed,
+    /// Not asked: the [`FeedThrottle`] said to hold off.
+    Held,
+}
+
+/// Asks ArtCraft's release feed up to `attempts` times, as often as `throttle` allows (waiting at
+/// most [`MAX_THROTTLE_WAIT`] for it), saving a good answer.
+fn fetch_feed(http: &Http, paths: &Paths, url: &str, throttle: &Mutex<FeedThrottle>, attempts: usize) -> FeedFetch {
+    let mut asked = false;
     for attempt in 0..attempts.max(1) {
-        if attempt > 0 {
-            std::thread::sleep(FEED_RETRY_WAITS.get(attempt - 1).copied().unwrap_or(Duration::from_secs(3)));
+        let wait = throttle.lock().unwrap_or_else(PoisonError::into_inner).wait(crate::now());
+        if wait > MAX_THROTTLE_WAIT {
+            if !asked {
+                log::info!("holding off the ArtCraft API for {wait} s");
+            }
+            break;
         }
-        match http.get_feed(&url) {
+        if wait > 0 {
+            std::thread::sleep(Duration::from_secs(wait.unsigned_abs()));
+        }
+        {
+            let mut throttle = throttle.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = crate::now();
+            if throttle.wait(now) > 0 {
+                break;
+            }
+            throttle.sending(now);
+        }
+        asked = true;
+        let outcome = match http.get_feed(url) {
             Ok(body) => match Feed::parse(&body) {
                 Some(feed) => {
                     if let Err(e) = crate::paths::write_atomic(&paths.feed_cache(), body.as_bytes()) {
                         log::warn!("couldn't save the release feed: {e}");
                     }
-                    return Some(feed);
+                    throttle.lock().unwrap_or_else(PoisonError::into_inner).finished(Outcome::Answered, crate::now(), 0.0);
+                    return FeedFetch::Answered(feed);
                 }
-                None => log::warn!("the release feed answered with something unreadable (try {})", attempt + 1),
+                None => {
+                    log::warn!("the release feed answered with something unreadable (try {})", attempt + 1);
+                    Outcome::Failed { retry_after: None }
+                }
             },
-            Err(e) => log::info!("release feed unavailable (try {}): {e}", attempt + 1),
+            Err(e) if e.throttled => {
+                log::warn!("the ArtCraft API asked us to slow down (HTTP 429); holding off");
+                Outcome::Throttled { retry_after: e.retry_after }
+            }
+            Err(e) => {
+                log::info!("release feed unavailable (try {}): {}", attempt + 1, e.why);
+                Outcome::Failed { retry_after: e.retry_after }
+            }
+        };
+        throttle.lock().unwrap_or_else(PoisonError::into_inner).finished(outcome, crate::now(), feed_throttle::jitter());
+        if matches!(outcome, Outcome::Throttled { .. }) {
+            break;
         }
     }
-    None
+    if asked { FeedFetch::Failed } else { FeedFetch::Held }
 }
 
 /// The feed's address. `ARTCRAFT_LAUNCHER_FEED_URL` points at a staging server or a local copy
@@ -755,7 +807,61 @@ mod tests {
             loaded: AtomicBool::new(false),
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
+            feed_throttle: Mutex::new(FeedThrottle::new()),
         }
+    }
+
+    /// A local server answering every request with `status` (and `Retry-After: 120` on a 429),
+    /// counting the requests.
+    fn serve(status: &'static str) -> (String, Arc<AtomicUsize>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/craft_apps/release_info", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                counted.fetch_add(1, Ordering::SeqCst);
+                let extra = if status.starts_with("429") { "Retry-After: 120\r\n" } else { "" };
+                let _ = write!(stream, "HTTP/1.1 {status}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (url, hits)
+    }
+
+    #[test]
+    fn a_429_stops_the_retries_and_holds_off_the_api() {
+        let (url, hits) = serve("429 Too Many Requests");
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new().unwrap();
+        let throttle = Mutex::new(FeedThrottle::load(&paths.feed_throttle(), crate::now()));
+        assert!(matches!(fetch_feed(&http, &paths, &url, &throttle, FEED_ATTEMPTS), FeedFetch::Failed));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+        // The next checks (and a relaunch) don't call it at all.
+        assert!(matches!(fetch_feed(&http, &paths, &url, &throttle, FEED_ATTEMPTS), FeedFetch::Held));
+        let relaunched = Mutex::new(FeedThrottle::load(&paths.feed_throttle(), crate::now()));
+        assert!(matches!(fetch_feed(&http, &paths, &url, &relaunched, FEED_ATTEMPTS), FeedFetch::Held));
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_failing_api_is_retried_quickly_only_during_the_first_load() {
+        let (url, hits) = serve("503 Service Unavailable");
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new().unwrap();
+        let throttle = Mutex::new(FeedThrottle::new());
+        // First load: three tries, a couple of seconds apart.
+        assert!(matches!(fetch_feed(&http, &paths, &url, &throttle, FEED_ATTEMPTS), FeedFetch::Failed));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        // Once the server has answered, never more than one a minute.
+        throttle.lock().unwrap().finished(Outcome::Answered, crate::now(), 0.0);
+        assert!(matches!(fetch_feed(&http, &paths, &url, &throttle, FEED_ATTEMPTS), FeedFetch::Held));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 
     const NOW: i64 = 1_791_500_000;
