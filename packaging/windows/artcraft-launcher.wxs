@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ArtCraft Launcher MSI (WiX Toolset v5: `dotnet tool install -g wix`). Built by package.ps1:
+
+    wix build artcraft-launcher.wxs -arch x64 -d Version=1.2.3 -d BinDir=... -d IconPath=... -o out.msi
+
+  Per-user install (no UAC prompt) into %LOCALAPPDATA%\Programs\ArtCraft Launcher, so the
+  launcher can update itself without elevation, plus a Start Menu shortcut. The shortcut carries
+  the AppUserModelID ai.storyteller.artcraft-launcher, which Windows needs to show toast
+  notifications from an unpackaged app and to group the taskbar button. No file associations.
+
+  Per-user packages can't use a file as a component's KeyPath (ICE38), so each component is
+  keyed on an HKCU value, and the folders we create are removed on uninstall (ICE64).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="ArtCraft Launcher"
+      Manufacturer="Learning Machines LLC"
+      Version="$(var.Version)"
+      UpgradeCode="1AC08DBF-D4CF-4BA4-A81E-CAA5C1004974"
+      Scope="perUser"
+      Compressed="yes"
+      Language="1033">
+    <SummaryInformation Description="ArtCraft Launcher: install and update the Craft App Suite" Manufacturer="Learning Machines LLC" />
+    <!-- Same-version upgrades let successive pre-releases of one X.Y.Z replace each other
+         (MSI versions are numeric, so 1.2.3-rc.1 and 1.2.3-rc.2 are both 1.2.3). -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+        DowngradeErrorMessage="A newer version of ArtCraft Launcher is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- MSI caches this icon using its Id as the filename; keep the .exe extension (ICE50). -->
+    <Icon Id="ArtCraftLauncherIcon.exe" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="ArtCraftLauncherIcon.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/storytold/craft-launcher" />
+    <Property Id="ARPURLUPDATEINFO" Value="https://github.com/storytold/craft-launcher/releases" />
+    <Property Id="ARPHELPLINK" Value="https://discord.gg/artcraft" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="ArtCraft Launcher" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main" Title="ArtCraft Launcher" Level="1">
+      <ComponentGroupRef Id="ArtCraftLauncherFiles" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <ComponentGroup Id="ArtCraftLauncherFiles">
+      <Component Id="ArtCraftLauncherApp" Directory="INSTALLFOLDER" Guid="55DCC431-EBEF-4C11-BABB-6D78CE0ECF4E">
+        <File Id="ArtCraftLauncherExe" Source="$(var.BinDir)\artcraft-launcher.exe" KeyPath="no" />
+        <RegistryValue Root="HKCU" Key="Software\Learning Machines LLC\ArtCraft Launcher" Name="InstallDir" Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+        <!-- Win+R "artcraft-launcher". -->
+        <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\App Paths\artcraft-launcher.exe" Value="[#ArtCraftLauncherExe]" Type="string" />
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+      </Component>
+
+      <Component Id="ArtCraftLauncherShortcut" Directory="ProgramMenuFolder" Guid="870F3DFA-BC0F-497F-85D5-A361B04826AF">
+        <Shortcut Id="StartMenuShortcut" Name="ArtCraft Launcher"
+            Description="Install and update the Craft App Suite"
+            Target="[#ArtCraftLauncherExe]" WorkingDirectory="INSTALLFOLDER"
+            Icon="ArtCraftLauncherIcon.exe" IconIndex="0">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="ai.storyteller.artcraft-launcher" />
+        </Shortcut>
+        <RegistryValue Root="HKCU" Key="Software\Learning Machines LLC\ArtCraft Launcher" Name="StartMenuShortcut" Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+</Wix>

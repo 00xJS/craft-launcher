@@ -1,0 +1,14 @@
+ArtCraft Launcher app icon (artcraft-launcher.svg, tray/*.svg and every file derived from them in
+this directory: artcraft-launcher-1024.png, artcraft-launcher.icns, artcraft-launcher.ico,
+hicolor/, tray/*.png).
+
+Original artwork made for this project: a grid of rounded tiles in the Craft apps' colours with a
+launch arrow, drawn directly as SVG. No third-party material. Licensed like the rest of
+ArtCraft Launcher, under either of
+
+  * Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0)
+  * MIT license (https://opensource.org/licenses/MIT)
+
+at your option.
+
+Regenerate the derived files with packaging/icons.sh.

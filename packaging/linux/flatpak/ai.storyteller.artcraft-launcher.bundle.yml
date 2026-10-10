@@ -1,0 +1,52 @@
+# Flatpak manifest for the single-file bundle attached to every GitHub release
+# (artcraft-launcher-<version>-linux-<arch>.flatpak). Build it with packaging/linux/flatpak-bundle.sh.
+#
+# It repackages the release's own Linux tarball (artcraft-launcher-<version>-linux-<arch>.tar.gz,
+# built on Ubuntu 22.04 by package.sh) instead of compiling Rust inside flatpak-builder: no
+# network and no vendored crate sources during the build, a few seconds instead of many minutes,
+# and byte-for-byte the same binary as the AppImage/deb/rpm. The script unpacks the tarball
+# into `stage/` next to a copy of this file. The binary needs glibc >= 2.35 and loads X11,
+# Wayland, xkbcommon and Vulkan at runtime; the freedesktop runtime has all of them, and the
+# GPU driver comes from its org.freedesktop.Platform.GL extension.
+#
+# ai.storyteller.artcraft-launcher.yml (same directory) is the from-source manifest for Flathub.
+# Keep runtime-version and finish-args identical in both (packaging-lint checks this).
+id: ai.storyteller.artcraft-launcher
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: artcraft-launcher
+finish-args:
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
+  - --share=ipc
+  # GPU access for egui's wgpu renderer (Vulkan, or GL as a fallback).
+  - --device=dri
+  # The launcher reads the Craft apps' GitHub releases and downloads them.
+  - --share=network
+  # Tray icon (StatusNotifierItem) and desktop notifications, both over the session bus.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  # LIMITATION: a launcher inside a Flatpak sandbox cannot install software on the host by
+  # itself. It may run `flatpak-spawn --host` (org.freedesktop.Flatpak) to start installed apps
+  # and host installers, and it gets the home directory so downloaded AppImages and tarballs land
+  # where the host can run them (~/Applications, ~/.local). Distro packages (.deb/.rpm) and
+  # anything needing root still have to be installed by the user. org.freedesktop.Flatpak is a
+  # sandbox escape that Flathub reviews case by case; the AppImage, .deb and .rpm builds are the
+  # recommended way to run the launcher on Linux.
+  - --talk-name=org.freedesktop.Flatpak
+  - --filesystem=home
+modules:
+  - name: artcraft-launcher
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/artcraft-launcher /app/bin/artcraft-launcher
+      - install -Dm644 share/applications/ai.storyteller.artcraft-launcher.desktop /app/share/applications/ai.storyteller.artcraft-launcher.desktop
+      # Already has the release's version and date substituted by package.sh.
+      - install -Dm644 share/metainfo/ai.storyteller.artcraft-launcher.metainfo.xml /app/share/metainfo/ai.storyteller.artcraft-launcher.metainfo.xml
+      - mkdir -p /app/share/icons /app/share/doc && cp -R share/icons/hicolor /app/share/icons/ && cp -R share/doc/artcraft-launcher /app/share/doc/
+    sources:
+      - type: dir
+        path: stage

@@ -1,0 +1,385 @@
+//! [`LauncherUi`]: state, event handling and the page layout.
+
+use std::time::Duration;
+
+use artcraft_launcher_core::protocol::{Backend, BackendOptions, Capabilities, Command, Event, LatestRelease, Source};
+use artcraft_launcher_core::release::Release;
+use artcraft_launcher_core::status::AppStatus;
+use artcraft_launcher_core::{Platform, SUITE};
+
+use crate::model::AppEntry;
+use crate::settings::{Filter, Settings, SortKey, ViewMode};
+use crate::theme::{self, Tokens};
+
+/// What only the shell can do. Every method has a do-nothing default (the web build).
+pub trait Host {
+    /// Shows a system notification.
+    fn notify(&mut self, _title: &str, _body: &str) {}
+    /// A tray (menu bar) icon exists, so closing the window can keep the launcher running.
+    fn has_tray(&self) -> bool {
+        false
+    }
+    /// `Some(enabled)` where starting at login is supported.
+    fn login_item(&self) -> Option<bool> {
+        None
+    }
+    fn set_login_item(&mut self, _on: bool) -> Result<(), String> {
+        Err("not supported here".into())
+    }
+    /// Quit the launcher for real (not just hide to the tray).
+    fn quit(&mut self) {}
+}
+
+pub(crate) struct Toast {
+    pub text: String,
+    pub error: bool,
+    pub until: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Dialog {
+    Notes(String),
+    ConfirmUninstall(String),
+    Settings,
+}
+
+pub struct LauncherUi {
+    pub(crate) backend: Box<dyn Backend>,
+    pub settings: Settings,
+    pub(crate) entries: Vec<AppEntry>,
+    pub(crate) caps: Capabilities,
+    pub(crate) platform: Option<Platform>,
+    pub(crate) checking: bool,
+    pub(crate) last_source: Option<Source>,
+    pub(crate) rate_limited_until: Option<i64>,
+    pub(crate) launcher_update: Option<Release>,
+    pub(crate) search: String,
+    pub(crate) toasts: Vec<Toast>,
+    pub(crate) dialog: Option<Dialog>,
+    started: bool,
+    applied_theme: Option<theme::ThemeChoice>,
+    /// Fonts registered with `set_fonts` only exist from the next frame on; drawing with the named
+    /// weights before then would abort.
+    fonts_ready: bool,
+    sent_options: Option<BackendOptions>,
+}
+
+impl LauncherUi {
+    pub fn new(ctx: &egui::Context, backend: Box<dyn Backend>, settings: Settings) -> Self {
+        theme::install_fonts(ctx);
+        egui_extras::install_image_loaders(ctx);
+        let caps = backend.capabilities();
+        let platform = backend.platform();
+        Self {
+            backend,
+            settings,
+            entries: SUITE.iter().map(AppEntry::new).collect(),
+            caps,
+            platform,
+            checking: false,
+            last_source: None,
+            rate_limited_until: None,
+            launcher_update: None,
+            search: String::new(),
+            toasts: Vec::new(),
+            dialog: None,
+            started: false,
+            applied_theme: None,
+            fonts_ready: false,
+            sent_options: None,
+        }
+    }
+
+    /// Installed apps with an update waiting (the tray shows the count).
+    pub fn update_count(&self) -> usize {
+        self.entries.iter().filter(|e| e.status(self.platform, self.caps.manage_apps) == AppStatus::UpdateAvailable).count()
+    }
+
+    /// Looks for updates now (the tray's "Check for Updates").
+    pub fn check_now(&mut self) {
+        self.backend.send(Command::CheckForUpdates { force: true });
+        self.backend.send(Command::Detect);
+    }
+
+    pub(crate) fn send(&mut self, command: Command) {
+        self.backend.send(command);
+    }
+
+    pub(crate) fn toast(&mut self, ctx: &egui::Context, text: impl Into<String>, error: bool) {
+        let now = ctx.input(|i| i.time);
+        self.toasts.push(Toast { text: text.into(), error, until: now + if error { 8.0 } else { 4.5 } });
+        if self.toasts.len() > 4 {
+            self.toasts.remove(0);
+        }
+    }
+
+    pub(crate) fn entry(&self, id: &str) -> Option<&AppEntry> {
+        self.entries.iter().find(|e| e.app.id == id)
+    }
+
+    fn entry_mut(&mut self, id: &str) -> Option<&mut AppEntry> {
+        self.entries.iter_mut().find(|e| e.app.id == id)
+    }
+
+    /// Non-drawing work: runs every frame and also while the window is hidden in the tray.
+    pub fn logic(&mut self, ctx: &egui::Context, host: &mut dyn Host) {
+        let options = BackendOptions { kinds: self.settings.preferred_kinds.clone(), prereleases: self.settings.prereleases };
+        if self.sent_options.as_ref() != Some(&options) {
+            self.backend.send(Command::Configure(options.clone()));
+            self.sent_options = Some(options);
+        }
+        if !self.started {
+            self.started = true;
+            self.backend.send(Command::CheckForUpdates { force: false });
+        }
+        let now = self.backend.now();
+        if let Some(every) = self.settings.check_every.seconds()
+            && !self.checking
+            && self.settings.last_check.is_none_or(|t| now - t >= every)
+        {
+            self.backend.send(Command::CheckForUpdates { force: false });
+        }
+        let mut changed = false;
+        for event in self.backend.poll() {
+            changed |= self.handle(ctx, event);
+        }
+        if changed {
+            self.announce_updates(host);
+        }
+        // Wake up now and then for scheduled checks, even in the tray.
+        ctx.request_repaint_after(Duration::from_secs(60));
+    }
+
+    /// Returns whether app state changed.
+    fn handle(&mut self, ctx: &egui::Context, event: Event) -> bool {
+        match event {
+            Event::Latest { app, latest } => {
+                if let Some(e) = self.entry_mut(&app) {
+                    // A failed check keeps the release we already know about.
+                    if !(matches!(latest, LatestRelease::Failed(_)) && matches!(e.latest, Some(LatestRelease::Found(_)))) {
+                        e.latest = Some(latest);
+                    }
+                }
+                true
+            }
+            Event::Detected { app, installed } => {
+                if let Some(e) = self.entry_mut(&app) {
+                    e.installed = installed;
+                    e.detected = true;
+                }
+                true
+            }
+            Event::Progress { app, phase } => {
+                if let Some(e) = self.entry_mut(&app) {
+                    e.job = Some(phase);
+                }
+                false
+            }
+            Event::JobFinished { app, result } => {
+                if let Some(e) = self.entry_mut(&app) {
+                    e.job = None;
+                }
+                match result {
+                    Ok(msg) => self.toast(ctx, msg, false),
+                    Err(e) if e == "cancelled" => self.toast(ctx, "Cancelled", false),
+                    Err(e) => self.toast(ctx, e, true),
+                }
+                true
+            }
+            Event::LauncherUpdate(r) => {
+                self.launcher_update = Some(r);
+                false
+            }
+            Event::CheckStarted => {
+                self.checking = true;
+                false
+            }
+            Event::CheckFinished { at, source, rate_limited_until } => {
+                self.checking = false;
+                self.settings.last_check = Some(at);
+                self.last_source = Some(source);
+                self.rate_limited_until = rate_limited_until;
+                true
+            }
+        }
+    }
+
+    /// One notification per new version of an installed app.
+    fn announce_updates(&mut self, host: &mut dyn Host) {
+        let mut fresh = Vec::new();
+        for e in &self.entries {
+            if e.status(self.platform, self.caps.manage_apps) != AppStatus::UpdateAvailable {
+                continue;
+            }
+            let Some(v) = e.latest_label() else { continue };
+            if self.settings.notified.get(e.app.id) != Some(&v) {
+                fresh.push((e.app.id, e.app.name, v));
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        if self.settings.notify {
+            let (title, body) = match fresh.as_slice() {
+                [(_, name, v)] => (format!("{name} {v} is available"), "Open ArtCraft Launcher to update.".to_string()),
+                many => {
+                    (format!("{} updates are available", many.len()), many.iter().map(|(_, n, v)| format!("{n} {v}")).collect::<Vec<_>>().join(", "))
+                }
+            };
+            host.notify(&title, &body);
+        }
+        for (id, _, version) in fresh {
+            self.settings.notified.insert(id.to_string(), version);
+        }
+    }
+
+    /// Draws the launcher.
+    pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) {
+        let ctx = ui.ctx().clone();
+        if !self.fonts_ready {
+            self.fonts_ready = true;
+            ctx.request_repaint();
+            return;
+        }
+        if self.applied_theme != Some(self.settings.theme) {
+            theme::apply(&ctx, self.settings.theme);
+            self.applied_theme = Some(self.settings.theme);
+        }
+        let t = Tokens::get(&ctx);
+        if self.entries.iter().any(|e| e.job.is_some()) || self.checking {
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        egui::Panel::top("header")
+            .frame(
+                egui::Frame::new().fill(t.surface).inner_margin(egui::Margin { left: 20, right: 20, top: 14, bottom: 12 }).stroke(egui::Stroke::NONE),
+            )
+            .show(ui, |ui| self.header(ui));
+        egui::Panel::bottom("footer")
+            .frame(egui::Frame::new().fill(t.surface).inner_margin(egui::Margin::symmetric(20, 7)))
+            .show(ui, |ui| self.footer(ui));
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(t.bg).inner_margin(egui::Margin { left: 20, right: 20, top: 14, bottom: 0 }))
+            .show(ui, |ui| {
+                self.toolbar(ui);
+                ui.add_space(6.0);
+                let ids = self.visible_ids();
+                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                    if ids.is_empty() {
+                        ui.add_space(40.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(egui::RichText::new("No apps match").size(16.0).color(t.text_muted));
+                        });
+                        return;
+                    }
+                    match self.settings.view {
+                        ViewMode::Grid => self.grid(ui, &ids),
+                        ViewMode::Table => self.table(ui, &ids),
+                    }
+                    ui.add_space(20.0);
+                });
+            });
+        self.dialogs(&ctx, host);
+        self.draw_toasts(&ctx);
+    }
+
+    /// The ids to show, filtered and sorted.
+    pub(crate) fn visible_ids(&self) -> Vec<&'static str> {
+        let needle = self.search.trim().to_lowercase();
+        let mut list: Vec<(usize, &AppEntry)> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| {
+                let s = e.status(self.platform, self.caps.manage_apps);
+                let keep = match self.settings.filter {
+                    Filter::All => true,
+                    Filter::Installed => s.is_installed(),
+                    Filter::Updates => s == AppStatus::UpdateAvailable,
+                    Filter::NotInstalled => !s.is_installed(),
+                };
+                keep && (needle.is_empty()
+                    || e.app.name.to_lowercase().contains(&needle)
+                    || e.app.tagline.to_lowercase().contains(&needle)
+                    || e.app.like.to_lowercase().contains(&needle))
+            })
+            .collect();
+        let platform = self.platform;
+        let manage = self.caps.manage_apps;
+        list.sort_by(|(ia, a), (ib, b)| {
+            let ord = match self.settings.sort {
+                SortKey::Suite => ia.cmp(ib),
+                SortKey::Name => a.app.name.cmp(b.app.name),
+                SortKey::Status => crate::model::status_rank(&a.status(platform, manage))
+                    .cmp(&crate::model::status_rank(&b.status(platform, manage)))
+                    .then(ia.cmp(ib)),
+                SortKey::Released => {
+                    let at = |e: &AppEntry| e.release().and_then(|r| r.published_at).unwrap_or(0);
+                    at(b).cmp(&at(a)).then(ia.cmp(ib))
+                }
+            };
+            if self.settings.sort_descending { ord.reverse() } else { ord }
+        });
+        list.into_iter().map(|(_, e)| e.app.id).collect()
+    }
+
+    pub(crate) fn count(&self, filter: Filter) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| {
+                let s = e.status(self.platform, self.caps.manage_apps);
+                match filter {
+                    Filter::All => true,
+                    Filter::Installed => s.is_installed(),
+                    Filter::Updates => s == AppStatus::UpdateAvailable,
+                    Filter::NotInstalled => !s.is_installed(),
+                }
+            })
+            .count()
+    }
+
+    fn draw_toasts(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        self.toasts.retain(|t| t.until > now);
+        if self.toasts.is_empty() {
+            return;
+        }
+        ctx.request_repaint_after(Duration::from_millis(250));
+        let t = Tokens::get(ctx);
+        egui::Area::new(egui::Id::new("toasts")).anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-20.0, -44.0)).order(egui::Order::Foreground).show(
+            ctx,
+            |ui| {
+                ui.set_max_width(380.0);
+                let mut dismiss = None;
+                for (i, toast) in self.toasts.iter().enumerate() {
+                    let accent = if toast.error { t.bad } else { t.good };
+                    let r = egui::Frame::new()
+                        .fill(t.surface)
+                        .stroke(egui::Stroke::new(1.0, t.border_strong))
+                        .corner_radius(theme::RADIUS)
+                        .shadow(egui::epaint::Shadow {
+                            offset: [0, 6],
+                            blur: 24,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(if t.dark { 120 } else { 40 }),
+                        })
+                        .inner_margin(egui::Margin::symmetric(14, 10))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                ui.painter().circle_filled(rect.center(), 4.0, accent);
+                                ui.add(egui::Label::new(egui::RichText::new(&toast.text).color(t.text)).wrap());
+                            });
+                        });
+                    if r.response.interact(egui::Sense::click()).clicked() {
+                        dismiss = Some(i);
+                    }
+                    ui.add_space(6.0);
+                }
+                if let Some(i) = dismiss {
+                    self.toasts.remove(i);
+                }
+            },
+        );
+    }
+}

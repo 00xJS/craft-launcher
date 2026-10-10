@@ -1,0 +1,36 @@
+[package]
+name = "artcraft-launcher"
+description = "ArtCraft Launcher: install, update and open the Craft App Suite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+default-run = "artcraft-launcher"
+build = "build.rs"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+artcraft-launcher-core = { workspace = true }
+artcraft-launcher-ui-egui = { workspace = true }
+artcraft-launcher-native = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
+egui = { workspace = true }
+log = { workspace = true }
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+notify-rust = "4"
+
+# The tray (menu bar) icon. On Linux and the BSDs the StatusNotifierItem backend talks D-Bus
+# directly, so no GTK or libappindicator is needed.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = "0.25"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
+tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
+
+[build-dependencies]
+# Icon + VERSIONINFO for artcraft-launcher.exe; build.rs only uses it when targeting Windows.
+winresource = "0.1"

@@ -1,0 +1,70 @@
+# Flatpak manifest for ArtCraft Launcher, ready for a Flathub submission.
+#
+# Flatpak builds run offline, so the crate sources must be vendored first. From the repo root:
+#
+#   curl -fsSLO https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+#   python3 flatpak-cargo-generator.py Cargo.lock -o packaging/linux/flatpak/cargo-sources.json
+#   flatpak-builder --user --install --force-clean build-flatpak packaging/linux/flatpak/ai.storyteller.artcraft-launcher.yml
+#   flatpak run ai.storyteller.artcraft-launcher
+#
+# For Flathub, replace the `dir` source with a `git` source pinned to a release tag and commit.
+# The single-file .flatpak attached to each release comes from
+# ai.storyteller.artcraft-launcher.bundle.yml, which repackages the prebuilt release binary.
+# Keep runtime-version and finish-args identical.
+id: ai.storyteller.artcraft-launcher
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: artcraft-launcher
+finish-args:
+  # Display: Wayland first; X11 only when no Wayland compositor is running.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # X11 shared memory (MIT-SHM). Without it the X11 fallback is slow or fails.
+  - --share=ipc
+  # GPU access for egui's wgpu renderer (Vulkan, or GL as a fallback).
+  - --device=dri
+  # The launcher reads the Craft apps' GitHub releases and downloads them.
+  - --share=network
+  # Tray icon (StatusNotifierItem) and desktop notifications, both over the session bus.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
+  # LIMITATION: a launcher inside a Flatpak sandbox cannot install software on the host by
+  # itself. It may run `flatpak-spawn --host` (org.freedesktop.Flatpak) to start installed apps
+  # and host installers, and it gets the home directory so downloaded AppImages and tarballs land
+  # where the host can run them (~/Applications, ~/.local). Distro packages (.deb/.rpm) and
+  # anything needing root still have to be installed by the user. org.freedesktop.Flatpak is a
+  # sandbox escape that Flathub reviews case by case; the AppImage, .deb and .rpm builds are the
+  # recommended way to run the launcher on Linux.
+  - --talk-name=org.freedesktop.Flatpak
+  - --filesystem=home
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+modules:
+  - name: artcraft-launcher
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/artcraft-launcher/cargo
+        CARGO_NET_OFFLINE: 'true'
+    build-commands:
+      - cargo --offline build --release --locked -p artcraft-launcher
+      - install -Dm755 target/release/artcraft-launcher /app/bin/artcraft-launcher
+      - install -Dm644 packaging/linux/ai.storyteller.artcraft-launcher.desktop /app/share/applications/ai.storyteller.artcraft-launcher.desktop
+      - mkdir -p /app/share/icons && cp -R assets/app-icon/hicolor /app/share/icons/
+      - >-
+        version=$(awk '/^\[/{p=($0=="[workspace.package]");next} p&&$1=="version"{gsub(/[" ]/,"",$3);print $3;exit}' Cargo.toml);
+        install -d /app/share/metainfo;
+        sed -e "s/@VERSION@/$version/" -e "s/@DATE@/$(date -u +%Y-%m-%d)/"
+        packaging/linux/ai.storyteller.artcraft-launcher.metainfo.xml.in > /app/share/metainfo/ai.storyteller.artcraft-launcher.metainfo.xml
+    sources:
+      - type: dir
+        path: ../../..
+        skip:
+          - target
+          - dist
+          - build-flatpak
+          - .flatpak-builder
+      - cargo-sources.json
