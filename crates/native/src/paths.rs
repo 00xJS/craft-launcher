@@ -36,6 +36,11 @@ impl Paths {
         self.cache.join("releases.json")
     }
 
+    /// The last answer from ArtCraft's release feed, for an instant first paint and as a fallback.
+    pub fn feed_cache(&self) -> PathBuf {
+        self.cache.join("feed.json")
+    }
+
     pub fn manifest(&self) -> PathBuf {
         self.data.join("installed.json")
     }

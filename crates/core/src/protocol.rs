@@ -100,6 +100,8 @@ pub const CANCELLED: &str = "cancelled";
 /// Where release information came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
+    /// ArtCraft's release feed (storyteller-web), which polls GitHub for everyone.
+    Feed,
     /// The GitHub REST API.
     GitHubApi,
     /// github.com release pages (no API quota; used when the API is rate-limited).
@@ -111,6 +113,7 @@ pub enum Source {
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
+            Self::Feed => "ArtCraft",
             Self::GitHubApi => "GitHub",
             Self::GitHubPages => "GitHub (release pages)",
             Self::Cache => "saved results",
@@ -129,6 +132,11 @@ pub enum Event {
     LauncherUpdate(Release),
     /// The new launcher is in place (or will be, once this one exits): quit now so it can start.
     LauncherRestarting,
+    /// News and alerts from ArtCraft's release feed (replaces any earlier set).
+    Notices {
+        announcements: Vec<crate::feed::Notice>,
+        alerts: Vec<crate::feed::Notice>,
+    },
     Detected {
         app: String,
         installed: Option<Installed>,

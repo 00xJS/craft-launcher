@@ -461,6 +461,63 @@ fn the_current_desktop_setting_is_only_offered_where_the_os_has_desktops() {
 }
 
 #[test]
+fn feed_announcements_and_alerts_show_until_dismissed() {
+    use artcraft_launcher_core::feed::Notice;
+    let notice = |id: &str, title: &str, link: Option<&str>| Notice {
+        id: id.into(),
+        title: title.into(),
+        body: format!("{title} body"),
+        link: link.map(str::to_string),
+        created_at: None,
+    };
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let mut evs = events();
+    evs.push(Event::Notices {
+        announcements: vec![notice("a1", "CADCraft 1.0 is out", Some("https://getartcraft.com/news"))],
+        alerts: vec![notice("x1", "Security update", Some("https://getartcraft.com/security"))],
+    });
+    let mut backend = Some(Fake { events: evs, sent, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut NoHost);
+                l.ui(ui, &mut NoHost);
+            }
+        },
+        None,
+    );
+    h.run_steps(6);
+    // The alert pops up first; OK acknowledges it for good.
+    h.get_by_label("Security update");
+    h.get_by_label("Open link");
+    h.get_by_label("OK").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Security update").is_none());
+    assert!(h.state().as_ref().unwrap().settings.dismissed_notices.contains("x1"));
+    // The announcement stays inline until dismissed.
+    h.get_by_label("CADCraft 1.0 is out");
+    h.get_by_label("Learn more");
+    h.get_all_by_label("Dismiss").next().unwrap().click();
+    h.run_steps(4);
+    assert!(h.query_by_label("CADCraft 1.0 is out").is_none());
+    assert!(h.state().as_ref().unwrap().settings.dismissed_notices.contains("a1"));
+}
+
+#[test]
+fn automatic_checks_run_every_five_minutes() {
+    use artcraft_launcher_ui_egui::settings::CheckEvery;
+    assert_eq!(Settings::default().check_every.seconds(), Some(300));
+    // Older saved choices still load, and mean "automatically" now.
+    assert_eq!(CheckEvery::Day.seconds(), Some(300));
+    assert_eq!(CheckEvery::Never.seconds(), None);
+}
+
+#[test]
 fn web_build_offers_downloads() {
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, false);
     h.run_steps(8);

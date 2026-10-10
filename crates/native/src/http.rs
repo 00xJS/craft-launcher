@@ -32,6 +32,8 @@ pub enum Fetched {
 #[derive(Clone)]
 pub struct Http {
     small: ureq::Agent,
+    /// ArtCraft's release feed: a short timeout, so a slow server never holds up a check.
+    feed: ureq::Agent,
     no_redirect: ureq::Agent,
     download: ureq::Agent,
     token: Option<String>,
@@ -44,6 +46,14 @@ impl Http {
         let small = ureq::Agent::config_builder()
             .tls_config(tls())
             .timeout_global(Some(Duration::from_secs(20)))
+            .http_status_as_error(false)
+            .user_agent(USER_AGENT)
+            .build()
+            .new_agent();
+        let feed = ureq::Agent::config_builder()
+            .tls_config(tls())
+            .timeout_connect(Some(Duration::from_secs(5)))
+            .timeout_global(Some(Duration::from_secs(10)))
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
             .build()
@@ -70,7 +80,7 @@ impl Http {
         // An optional token raises GitHub's limit from 60 to 5000 requests an hour. Only ever sent
         // to api.github.com.
         let token = std::env::var("ARTCRAFT_LAUNCHER_GITHUB_TOKEN").ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-        Ok(Self { small, no_redirect, download, token })
+        Ok(Self { small, feed, no_redirect, download, token })
     }
 
     /// GET a GitHub API resource, revalidating with `etag` when given.
@@ -107,6 +117,15 @@ impl Http {
                 }
             }
             s => Err(format!("GitHub answered HTTP {s}")),
+        }
+    }
+
+    /// ArtCraft's release feed, or why it couldn't be read. Never takes more than ~10 seconds.
+    pub fn get_feed(&self, url: &str) -> Result<String, String> {
+        let mut resp = self.feed.get(url).header("Accept", "application/json").call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
+        match resp.status().as_u16() {
+            200 => resp.body_mut().with_config().limit(MAX_SMALL).read_to_string().map_err(|e| format!("unreadable answer ({e})")),
+            s => Err(format!("{} answered HTTP {s}", host(url))),
         }
     }
 

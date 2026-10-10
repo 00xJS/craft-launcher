@@ -58,22 +58,22 @@ pub enum CheckEvery {
 }
 
 impl CheckEvery {
-    pub const ALL: [Self; 4] = [Self::Hour, Self::FourHours, Self::Day, Self::Never];
+    /// The choices offered. `FourHours` and `Day` are kept so saved settings still load; they now
+    /// mean "automatically" too.
+    pub const ALL: [Self; 2] = [Self::Hour, Self::Never];
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Hour => "Every hour",
-            Self::FourHours => "Every 4 hours",
-            Self::Day => "Once a day",
+            Self::Hour | Self::FourHours | Self::Day => "Automatically",
             Self::Never => "Only when I ask",
         }
     }
 
+    /// How often to look. Checks ask ArtCraft's release feed (one cheap request; GitHub only as a
+    /// fallback), so automatic checks run every five minutes.
     pub fn seconds(self) -> Option<i64> {
         match self {
-            Self::Hour => Some(3600),
-            Self::FourHours => Some(4 * 3600),
-            Self::Day => Some(24 * 3600),
+            Self::Hour | Self::FourHours | Self::Day => Some(5 * 60),
             Self::Never => None,
         }
     }
@@ -98,6 +98,8 @@ pub struct Settings {
     pub prereleases: bool,
     /// Linux: the package format to prefer for new installs (empty: the system's own).
     pub preferred_kinds: Vec<PackageKind>,
+    /// Announcements and alerts from the release feed the user dismissed (by notice id).
+    pub dismissed_notices: std::collections::BTreeSet<String>,
     /// Updates already announced, so each version is announced once: app id → version.
     pub notified: BTreeMap<String, String>,
     /// Unix seconds of the last finished check.
@@ -118,6 +120,7 @@ impl Default for Settings {
             notify: true,
             prereleases: false,
             preferred_kinds: Vec::new(),
+            dismissed_notices: std::collections::BTreeSet::new(),
             notified: BTreeMap::new(),
             last_check: None,
         }

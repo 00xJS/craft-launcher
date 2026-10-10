@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use artcraft_launcher_core::catalog::{LAUNCHER_ID, LAUNCHER_REPO};
+use artcraft_launcher_core::catalog::{LAUNCHER, LAUNCHER_ID};
+use artcraft_launcher_core::feed::{Feed, FeedAnswer};
 use artcraft_launcher_core::platform::{Arch, Os, Platform, pick_asset};
 use artcraft_launcher_core::protocol::{
     Backend, BackendOptions, Capabilities, Command, Event, JobPhase, LatestRelease, PAUSED, PausedDownload, Source,
@@ -19,8 +20,12 @@ use crate::manifest::Manifest;
 use crate::paths::Paths;
 use crate::source::{GitHubSource, ReleaseSource};
 
-/// Automatic checks closer together than this reuse the last answers.
-const FRESH_FOR: i64 = 10 * 60;
+/// Automatic checks closer together than this reuse the last answers. The UI asks every five
+/// minutes; this stops a burst of requests (refresh, focus, timers) from repeating work.
+const FRESH_FOR: i64 = 4 * 60;
+/// When the release feed can't answer for an app, GitHub is asked about it at most this often
+/// (pressing Refresh asks right away).
+const GITHUB_FALLBACK_EVERY: i64 = 60 * 60;
 /// Requests in flight at once during a check.
 const WORKERS: usize = 4;
 
@@ -40,6 +45,8 @@ struct Shared {
     last_check: Mutex<Option<i64>>,
     /// The newer ArtCraft Launcher release, once a check has found one.
     launcher_release: Mutex<Option<Release>>,
+    /// When GitHub was last asked about each app (Unix seconds), to keep the fallback rare.
+    github_asked: Mutex<HashMap<String, i64>>,
 }
 
 impl Shared {
@@ -87,6 +94,7 @@ impl NativeBackend {
             checking: AtomicBool::new(false),
             detecting: AtomicBool::new(false),
             launcher_release: Mutex::new(None),
+            github_asked: Mutex::new(HashMap::new()),
             last_check: Mutex::new(None),
         });
         let backend = Self { shared, paths, http, source, platform: native_platform(), self_install: crate::self_update::current() };
@@ -95,17 +103,27 @@ impl NativeBackend {
         backend
     }
 
-    /// Shows the saved answers from the last run straight away, before any network request.
+    /// Shows the saved answers from the last run straight away, before any network request: the
+    /// release feed's where they're still fresh, GitHub's otherwise.
     fn replay_cache(&self) {
-        let Some(source) = &self.source else { return };
         let pre = self.options().prereleases;
+        let feed = if pre { None } else { load_feed(&self.paths) };
+        let now = crate::now();
         for app in &SUITE {
-            if let Some(latest) = source.cached(app.repo, pre) {
+            let latest = match feed.as_ref().map(|f| f.answer(app, now)) {
+                Some(FeedAnswer::Fresh(Some(r))) => Some(LatestRelease::Found(r)),
+                Some(FeedAnswer::Fresh(None)) => Some(LatestRelease::None),
+                _ => self.source.as_ref().and_then(|s| s.cached(&feed_repo(feed.as_ref(), app), pre)),
+            };
+            if let Some(latest) = latest {
                 if let LatestRelease::Found(r) = &latest {
                     self.shared.latest.lock().unwrap_or_else(PoisonError::into_inner).insert(app.id.to_string(), r.clone());
                 }
                 self.shared.emit(Event::Latest { app: app.id.to_string(), latest });
             }
+        }
+        if let Some(f) = feed {
+            self.shared.emit(Event::Notices { announcements: f.announcements, alerts: f.alerts });
         }
     }
 
@@ -145,8 +163,11 @@ impl NativeBackend {
         });
     }
 
+    /// Looks up the latest releases: ArtCraft's release feed first (one request for every app),
+    /// GitHub for anything the feed can't vouch for (apps it doesn't list, entries more than a
+    /// day old, or no answer at all), at most once an hour per app unless `force`.
     fn check(&self, force: bool) {
-        let Some(source) = self.source.clone() else {
+        let (Some(source), Some(http)) = (self.source.clone(), self.http.clone()) else {
             for app in &SUITE {
                 self.shared
                     .emit(Event::Latest { app: app.id.to_string(), latest: LatestRelease::Failed("secure connections aren't available".into()) });
@@ -163,40 +184,54 @@ impl NativeBackend {
         let pre = self.options().prereleases;
         std::thread::spawn(move || {
             shared.emit(Event::CheckStarted);
-            let queue = Mutex::new(SUITE.iter().collect::<Vec<&CraftApp>>());
+            // The feed serves stable releases only; with pre-releases on, GitHub decides.
+            let feed = if pre { None } else { fetch_feed(&http, &paths) };
+            if let Some(f) = &feed {
+                shared.emit(Event::Notices { announcements: f.announcements.clone(), alerts: f.alerts.clone() });
+            }
+            let now = crate::now();
+            let queue = Mutex::new(SUITE.iter().chain(std::iter::once(&LAUNCHER)).collect::<Vec<&CraftApp>>());
             let sources = Mutex::new(Vec::new());
             std::thread::scope(|scope| {
                 for _ in 0..WORKERS {
                     scope.spawn(|| {
                         loop {
                             let Some(app) = queue.lock().unwrap_or_else(PoisonError::into_inner).pop() else { break };
-                            let answer = source.latest(app.repo, pre);
-                            sources.lock().unwrap_or_else(PoisonError::into_inner).push(answer.source);
-                            if let LatestRelease::Found(r) = &answer.latest {
+                            let (latest, used) = latest_for(app, feed.as_ref(), source.as_ref(), &shared, pre, force, now);
+                            if let Some(used) = used {
+                                sources.lock().unwrap_or_else(PoisonError::into_inner).push(used);
+                            }
+                            if app.id == LAUNCHER_ID {
+                                // Is there a newer ArtCraft Launcher?
+                                if let Some(LatestRelease::Found(r)) = latest
+                                    && let (Some(newest), Some(current)) = (r.version.as_ref(), crate::self_update::current_version())
+                                    && version::is_newer(newest, &current)
+                                    && !crate::self_update::just_updated_to(&paths, &r)
+                                {
+                                    *shared.launcher_release.lock().unwrap_or_else(PoisonError::into_inner) = Some(r.clone());
+                                    shared.emit(Event::LauncherUpdate(r));
+                                }
+                                continue;
+                            }
+                            let Some(latest) = latest else { continue };
+                            if let LatestRelease::Found(r) = &latest {
                                 shared.latest.lock().unwrap_or_else(PoisonError::into_inner).insert(app.id.to_string(), r.clone());
                             }
-                            shared.emit(Event::Latest { app: app.id.to_string(), latest: answer.latest });
+                            shared.emit(Event::Latest { app: app.id.to_string(), latest });
                         }
                     });
                 }
             });
-            // Is there a newer ArtCraft Launcher?
-            if let LatestRelease::Found(r) = source.latest(LAUNCHER_REPO, false).latest
-                && let (Some(latest), Some(current)) = (r.version.as_ref(), crate::self_update::current_version())
-                && version::is_newer(latest, &current)
-                && !crate::self_update::just_updated_to(&paths, &r)
-            {
-                *shared.launcher_release.lock().unwrap_or_else(PoisonError::into_inner) = Some(r.clone());
-                shared.emit(Event::LauncherUpdate(r));
-            }
             source.save();
             let sources = sources.into_inner().unwrap_or_else(PoisonError::into_inner);
             let source_used = if sources.contains(&Source::Cache) {
                 Source::Cache
             } else if sources.contains(&Source::GitHubPages) {
                 Source::GitHubPages
-            } else {
+            } else if sources.contains(&Source::GitHubApi) {
                 Source::GitHubApi
+            } else {
+                Source::Feed
             };
             let at = crate::now();
             *shared.last_check.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
@@ -399,6 +434,76 @@ fn partial_for(app: &CraftApp, shared: &Shared, paths: &Paths, platform: Option<
     Some((asset, done))
 }
 
+/// The latest release of `app`, and where it came from: the feed when it vouches for the app,
+/// else GitHub (if it's due), else GitHub's last answer. `None` when there's nothing to say yet.
+fn latest_for(
+    app: &CraftApp,
+    feed: Option<&Feed>,
+    source: &dyn ReleaseSource,
+    shared: &Shared,
+    pre: bool,
+    force: bool,
+    now: i64,
+) -> (Option<LatestRelease>, Option<Source>) {
+    match feed.map(|f| f.answer(app, now)) {
+        Some(FeedAnswer::Fresh(Some(r))) => return (Some(LatestRelease::Found(r)), Some(Source::Feed)),
+        Some(FeedAnswer::Fresh(None)) => return (Some(LatestRelease::None), Some(Source::Feed)),
+        Some(FeedAnswer::AskGitHub) | None => {}
+    }
+    let repo = feed_repo(feed, app);
+    let due = {
+        let mut asked = shared.github_asked.lock().unwrap_or_else(PoisonError::into_inner);
+        let due = force || asked.get(app.id).is_none_or(|t| now - t >= GITHUB_FALLBACK_EVERY);
+        if due {
+            asked.insert(app.id.to_string(), now);
+        }
+        due
+    };
+    if due {
+        let answer = source.latest(&repo, pre);
+        (Some(answer.latest), Some(answer.source))
+    } else {
+        (source.cached(&repo, pre), None)
+    }
+}
+
+/// The repo to ask GitHub about, following the feed's repo renames.
+fn feed_repo(feed: Option<&Feed>, app: &CraftApp) -> String {
+    feed.map_or_else(|| app.repo.to_string(), |f| f.repo_for(app))
+}
+
+/// Asks ArtCraft's release feed, saving a good answer. When it can't be reached, the last saved
+/// answer stands in: its entries still only count while they're less than a day old.
+fn fetch_feed(http: &Http, paths: &Paths) -> Option<Feed> {
+    match http.get_feed(&feed_url()) {
+        Ok(body) => match Feed::parse(&body) {
+            Some(feed) => {
+                if let Err(e) = crate::paths::write_atomic(&paths.feed_cache(), body.as_bytes()) {
+                    log::warn!("couldn't save the release feed: {e}");
+                }
+                return Some(feed);
+            }
+            None => log::warn!("the release feed answered with something unreadable"),
+        },
+        Err(e) => log::info!("release feed unavailable, using GitHub: {e}"),
+    }
+    load_feed(paths)
+}
+
+/// The feed's address. `ARTCRAFT_LAUNCHER_FEED_URL` points at a staging server or a local copy
+/// (only `https://`, or plain `http://` on localhost).
+fn feed_url() -> String {
+    std::env::var("ARTCRAFT_LAUNCHER_FEED_URL")
+        .ok()
+        .filter(|u| u.starts_with("https://") || u.starts_with("http://127.0.0.1:") || u.starts_with("http://localhost:"))
+        .unwrap_or_else(|| artcraft_launcher_core::feed::FEED_URL.to_string())
+}
+
+/// The last saved feed answer, if any.
+fn load_feed(paths: &Paths) -> Option<Feed> {
+    std::fs::read_to_string(paths.feed_cache()).ok().and_then(|body| Feed::parse(&body))
+}
+
 /// The machine's real architecture: an x64 launcher on Windows on ARM should still pick ARM64
 /// builds.
 fn native_platform() -> Option<Platform> {
@@ -504,4 +609,99 @@ pub fn launcher_download(release: &Release, platform: Platform) -> Option<String
         _ => platform.default_kinds(),
     };
     pick_asset(release, &[LAUNCHER_ID], platform, kinds).map(|(a, _)| a.url.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicUsize;
+
+    use artcraft_launcher_core::protocol::LatestRelease;
+
+    use super::*;
+    use crate::source::Answer;
+
+    /// GitHub, counting how often it's asked.
+    #[derive(Default)]
+    struct CountingGitHub(AtomicUsize);
+
+    impl ReleaseSource for CountingGitHub {
+        fn latest(&self, _repo: &str, _pre: bool) -> Answer {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Answer { latest: LatestRelease::None, source: Source::GitHubApi }
+        }
+        fn cached(&self, _repo: &str, _pre: bool) -> Option<LatestRelease> {
+            None
+        }
+        fn rate_limited_until(&self) -> Option<i64> {
+            None
+        }
+        fn save(&self) {}
+    }
+
+    fn shared() -> Shared {
+        Shared {
+            events: Mutex::new(Vec::new()),
+            waker: Arc::new(|| {}),
+            latest: Mutex::new(HashMap::new()),
+            installed: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(HashMap::new()),
+            manifest: Mutex::new(Manifest::default()),
+            options: Mutex::new(BackendOptions::default()),
+            checking: AtomicBool::new(false),
+            detecting: AtomicBool::new(false),
+            last_check: Mutex::new(None),
+            launcher_release: Mutex::new(None),
+            github_asked: Mutex::new(HashMap::new()),
+        }
+    }
+
+    const NOW: i64 = 1_791_500_000;
+
+    fn feed() -> Feed {
+        Feed::parse(
+            r#"{"release_info": {"apps": {
+            "photocraft": {"repo": "storytold/photocraft", "latest_release": {"tag": "v0.6.0"}, "app_last_fetched": "2026-10-09T13:00:00Z"}
+        }}}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn github_is_only_the_fallback_and_is_asked_rarely() {
+        let github = CountingGitHub::default();
+        let shared = shared();
+        let photo = CraftApp::by_id("photocraft").unwrap();
+        let word = CraftApp::by_id("wordcraft").unwrap();
+        let feed = feed();
+
+        // The feed vouches for PhotoCraft: GitHub isn't asked.
+        let (latest, used) = latest_for(photo, Some(&feed), &github, &shared, false, false, NOW);
+        assert!(matches!(latest, Some(LatestRelease::Found(ref r)) if r.tag == "v0.6.0"));
+        assert_eq!(used, Some(Source::Feed));
+        assert_eq!(github.0.load(Ordering::SeqCst), 0);
+
+        // The feed doesn't list WordCraft: GitHub is asked once…
+        let (_, used) = latest_for(word, Some(&feed), &github, &shared, false, false, NOW);
+        assert_eq!(used, Some(Source::GitHubApi));
+        assert_eq!(github.0.load(Ordering::SeqCst), 1);
+        // …not again within the hour…
+        let (_, used) = latest_for(word, Some(&feed), &github, &shared, false, false, NOW + 30 * 60);
+        assert_eq!(used, None);
+        assert_eq!(github.0.load(Ordering::SeqCst), 1);
+        // …but Refresh asks right away, and an hour later it's due again.
+        latest_for(word, Some(&feed), &github, &shared, false, true, NOW + 31 * 60);
+        assert_eq!(github.0.load(Ordering::SeqCst), 2);
+        latest_for(word, Some(&feed), &github, &shared, false, false, NOW + 31 * 60 + GITHUB_FALLBACK_EVERY);
+        assert_eq!(github.0.load(Ordering::SeqCst), 3);
+
+        // No feed answer at all (server down): GitHub, still rate-limited per app.
+        let (_, used) = latest_for(photo, None, &github, &shared, false, false, NOW);
+        assert_eq!(used, Some(Source::GitHubApi));
+        assert_eq!(github.0.load(Ordering::SeqCst), 4);
+
+        // A feed entry more than a day old doesn't count.
+        let fresh_shared = super::tests::shared();
+        let (_, used) = latest_for(photo, Some(&feed), &github, &fresh_shared, false, false, NOW + 2 * 86_400);
+        assert_eq!(used, Some(Source::GitHubApi));
+    }
 }
