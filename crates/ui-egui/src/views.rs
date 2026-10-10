@@ -195,7 +195,12 @@ impl LauncherUi {
                 };
                 ui.label(small(label));
                 ui.add_space(14.0);
-                // Right to left: these read Website · GitHub · Discord.
+                // Right to left, so this reads: Website · GitHub · Discord, then the social icons.
+                ui.scope(|ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    widgets::social_icons(ui, 13.0);
+                });
+                ui.add_space(8.0);
                 use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
                 widgets::small_link(ui, "Discord", DISCORD_URL);
                 ui.label(RichText::new("·").size(11.5).color(t.text_faint));

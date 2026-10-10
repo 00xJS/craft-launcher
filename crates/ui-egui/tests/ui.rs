@@ -332,6 +332,11 @@ fn links_open_the_right_pages() {
     let sites = all_opened(&mut h, "Website");
     assert!(sites.contains(&"https://getartcraft.com".to_string()), "{sites:?}");
     assert!(sites.contains(&"https://getartcraft.com/apps/photocraft".to_string()), "{sites:?}");
+    // Social icons in the footer.
+    assert_eq!(click_opens(&mut h, "X").as_deref(), Some("https://x.com/get_artcraft"));
+    assert_eq!(click_opens(&mut h, "YouTube").as_deref(), Some("https://www.youtube.com/@OfficialArtcraftStudios"));
+    assert_eq!(click_opens(&mut h, "TikTok").as_deref(), Some("https://www.tiktok.com/@artcraft.studios"));
+    assert_eq!(click_opens(&mut h, "Instagram").as_deref(), Some("https://www.instagram.com/officialartcraftstudios"));
     // The … menu.
     h.get_all_by_label("…").next().unwrap().click();
     h.run_steps(3);

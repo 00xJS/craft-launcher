@@ -14,6 +14,9 @@ Third-party material
 This product bundles third-party material under its own licenses, listed below. The per-file
 list (author, source, license) is in ATTRIBUTION.md.
 
+Social service icons (assets/social/*.svg) — Simple Icons, CC0 1.0. The X, YouTube, TikTok and
+Instagram logos are trademarks of their respective owners and are used only to link to ArtCraft's
+accounts.
 Inter font (assets/fonts/Inter-*.ttf) — SIL Open Font License 1.1. See assets/fonts/OFL-Inter.txt.
 Craft App Suite app icons (assets/app-icons/*.png) — from each app's repository
 (github.com/storytold/<app>), MIT OR Apache-2.0, Copyright (c) 2026 ArtCraft Team and the <App>

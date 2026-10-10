@@ -159,6 +159,14 @@ affiliated with, sponsored by or endorsed by any of these companies.";
 pub const WEBSITE_URL: &str = "https://getartcraft.com";
 /// ArtCraft on GitHub: every Craft App's source.
 pub const GITHUB_URL: &str = "https://github.com/storytold";
+/// ArtCraft's social accounts: (service, URL). Shown as small icons, less prominent than Discord.
+pub const SOCIAL: [(&str, &str); 4] = [
+    ("X", "https://x.com/get_artcraft"),
+    ("YouTube", "https://www.youtube.com/@OfficialArtcraftStudios"),
+    ("TikTok", "https://www.tiktok.com/@artcraft.studios"),
+    ("Instagram", "https://www.instagram.com/officialartcraftstudios"),
+];
+
 /// The ArtCraft community on Discord.
 pub const DISCORD_URL: &str = "https://discord.gg/artcraft";
 

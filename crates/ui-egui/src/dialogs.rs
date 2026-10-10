@@ -160,18 +160,23 @@ impl LauncherUi {
         }
 
         section(ui, "Community");
-        row(ui, "Questions, ideas and news from the ArtCraft team", &mut |ui| {
+        ui.label(RichText::new("Questions, ideas and news from the ArtCraft team").color(t.text_muted));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
             use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
-            // Right to left: Website, GitHub, Discord.
             if widgets::discord_button(ui).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(DISCORD_URL));
-            }
-            if widgets::secondary(ui, "GitHub", 0.0).on_hover_text(GITHUB_URL).clicked() {
-                ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB_URL));
             }
             if widgets::secondary(ui, "Website", 0.0).on_hover_text(WEBSITE_URL).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(WEBSITE_URL));
             }
+            if widgets::secondary(ui, "GitHub", 0.0).on_hover_text(GITHUB_URL).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB_URL));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                widgets::social_icons(ui, 16.0);
+            });
         });
 
         section(ui, "Appearance");
