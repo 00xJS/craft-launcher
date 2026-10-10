@@ -89,6 +89,9 @@ pub struct Settings {
     pub theme: ThemeChoice,
     /// Closing the window keeps the launcher in the tray (menu bar) instead of quitting.
     pub close_to_tray: bool,
+    /// macOS: showing the window brings it to the current desktop (Space) instead of switching to
+    /// the desktop it was on.
+    pub show_on_current_desktop: bool,
     pub check_every: CheckEvery,
     /// Show a system notification when an installed app has an update.
     pub notify: bool,
@@ -110,6 +113,7 @@ impl Default for Settings {
             sort_descending: false,
             theme: ThemeChoice::System,
             close_to_tray: true,
+            show_on_current_desktop: true,
             check_every: CheckEvery::Hour,
             notify: true,
             prereleases: false,

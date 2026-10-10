@@ -28,6 +28,13 @@ notify-rust = "4"
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 tray-icon = "0.25"
 
+# macOS only: which desktop (Space) the window shows on (spaces.rs). Safe AppKit calls only, and
+# already in Cargo.lock through winit and tray-icon; pinned exactly to those versions.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow"] }
+
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 

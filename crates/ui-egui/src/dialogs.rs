@@ -153,6 +153,10 @@ impl LauncherUi {
             if host.has_tray() {
                 ui.checkbox(&mut self.settings.close_to_tray, "Keep running in the tray when the window is closed");
             }
+            if host.has_desktops() {
+                ui.checkbox(&mut self.settings.show_on_current_desktop, "Show the window on the current desktop")
+                    .on_hover_text("When on, opening the launcher from the menu bar brings its window to the desktop you're on. When off, macOS switches you to the desktop the window was on.");
+            }
             if let Some(mut on) = host.login_item()
                 && ui.checkbox(&mut on, "Start ArtCraft Launcher when I log in").changed()
                 && let Err(e) = host.set_login_item(on)

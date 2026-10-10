@@ -5,6 +5,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+#[cfg(target_os = "macos")]
+mod spaces;
 mod tray;
 
 use std::process::ExitCode;
@@ -91,6 +93,10 @@ impl Host for DesktopHost {
         self.tray
     }
 
+    fn has_desktops(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+
     fn login_item(&self) -> Option<bool> {
         Some(login::is_enabled())
     }
@@ -111,6 +117,9 @@ struct Shell {
     show_requests: Receiver<()>,
     visible: bool,
     quitting: bool,
+    /// The "show on the current desktop" setting last applied to the window (macOS).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    applied_follow: Option<bool>,
 }
 
 impl Shell {
@@ -135,11 +144,19 @@ impl Shell {
         } else if hidden {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         }
-        Self { ui: LauncherUi::new(&ctx, Box::new(backend), settings), tray, host, show_requests, visible, quitting: false }
+        Self { ui: LauncherUi::new(&ctx, Box::new(backend), settings), tray, host, show_requests, visible, quitting: false, applied_follow: None }
     }
 
     fn show(&mut self, ctx: &egui::Context) {
         self.visible = true;
+        // Before the window is ordered front, so it comes to this desktop rather than taking the
+        // user to its own (macOS; the setting doesn't exist elsewhere).
+        #[cfg(target_os = "macos")]
+        {
+            let on = self.ui.settings.show_on_current_desktop;
+            spaces::follow_current_desktop(on);
+            self.applied_follow = Some(on);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -159,6 +176,12 @@ impl Shell {
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ui.logic(ctx, &mut self.host);
+        #[cfg(target_os = "macos")]
+        if self.applied_follow != Some(self.ui.settings.show_on_current_desktop) {
+            let on = self.ui.settings.show_on_current_desktop;
+            spaces::follow_current_desktop(on);
+            self.applied_follow = Some(on);
+        }
         if self.show_requests.try_iter().count() > 0 {
             self.show(ctx);
         }

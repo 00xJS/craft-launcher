@@ -19,6 +19,11 @@ pub trait Host {
     fn has_tray(&self) -> bool {
         false
     }
+    /// The OS has desktops (macOS Spaces) the window can be shown on, so the "show on the current
+    /// desktop" setting applies.
+    fn has_desktops(&self) -> bool {
+        false
+    }
     /// `Some(enabled)` where starting at login is supported.
     fn login_item(&self) -> Option<bool> {
         None

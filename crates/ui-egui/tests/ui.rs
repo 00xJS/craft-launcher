@@ -447,6 +447,18 @@ fn the_launcher_updates_itself_and_quits_to_restart() {
 }
 
 #[test]
+fn the_current_desktop_setting_is_only_offered_where_the_os_has_desktops() {
+    // NoHost has no desktops (Windows, Linux, web): no setting.
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+    h.get_by_label("⚙").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("Show the window on the current desktop").is_none());
+    // On by default for everyone; macOS shows it in Settings (DesktopHost::has_desktops).
+    assert!(Settings::default().show_on_current_desktop);
+}
+
+#[test]
 fn web_build_offers_downloads() {
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, false);
     h.run_steps(8);
