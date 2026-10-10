@@ -21,6 +21,19 @@ pub fn app(id: &str) -> Option<ImageSource<'static>> {
     })
 }
 
+/// The ArtCraft wordmark, as supplied: dark ink for light backgrounds, white for dark ones.
+/// An ArtCraft trademark, not covered by the MIT/Apache license (`docs/brand/LICENSE-brand.txt`).
+pub fn artcraft_logo(dark_background: bool) -> ImageSource<'static> {
+    if dark_background {
+        egui::include_image!("../../../docs/brand/artcraft-logo-white.svg")
+    } else {
+        egui::include_image!("../../../docs/brand/artcraft-logo.svg")
+    }
+}
+
+/// The ArtCraft wordmark's width / height (its SVG view box: 1038.05 × 108).
+pub const ARTCRAFT_LOGO_ASPECT: f32 = 1038.05 / 108.0;
+
 /// The launcher's icon.
 pub fn launcher() -> ImageSource<'static> {
     egui::include_image!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.artcraft-launcher.png")

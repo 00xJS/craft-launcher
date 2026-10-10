@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate every app icon from assets/app-icon/artcraft-launcher.svg (the canonical master) and
-# the tray icons from assets/app-icon/tray/*.svg.
+# Regenerate every app icon from assets/app-icon/artcraft-launcher.svg (the canonical master), and
+# the tray icons from the ArtCraft "A" mark in docs/brand/ (a trademark, not MIT/Apache).
 #
 # Needs: resvg (brew install resvg / cargo install resvg). On macOS, iconutil also writes the
 # .icns. The outputs are committed, so packaging (and the Rust build, which include_bytes!s some
@@ -58,8 +58,11 @@ else
   echo "warning: iconutil not found (macOS only); artcraft-launcher.icns not regenerated" >&2
 fi
 
-# Tray icons: a black template glyph for the macOS menu bar (44 px = 22 pt @2x) and a colour
-# glyph for the Windows notification area and Linux/BSD status notifiers.
-render "$DIR/tray/tray-template.svg" 44 "$DIR/tray/tray-template.png"
-render "$DIR/tray/tray-color.svg" 64 "$DIR/tray/tray-color.png"
+# Tray icons: the ArtCraft "A" mark, rendered unmodified from the supplied brand files (an
+# ArtCraft trademark, not MIT/Apache: docs/brand/LICENSE-brand.txt). The black mark is the macOS
+# menu-bar template (44 px = 22 pt @2x; macOS tints it); the blue one is for the Windows
+# notification area and Linux/BSD status notifiers.
+BRAND="$ROOT/docs/brand"
+render "$BRAND/artcraft-mark-black.svg" 44 "$BRAND/artcraft-mark-black-44.png"
+render "$BRAND/artcraft-mark.svg" 64 "$BRAND/artcraft-mark-64.png"
 echo "icons written to $DIR"

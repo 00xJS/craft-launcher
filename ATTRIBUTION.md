@@ -10,7 +10,9 @@ next to them.
 
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
-| `assets/app-icon/` (all files) | ArtCraft Launcher app icon and tray icons (grid of app-coloured tiles with a launch arrow) | ArtCraft Launcher contributors | Original work, see [`assets/app-icon/README.md`](assets/app-icon/README.md) | MIT OR Apache-2.0, [`assets/app-icon/LICENSE.txt`](assets/app-icon/LICENSE.txt) |
+| `assets/app-icon/` (all files) | ArtCraft Launcher app icon (grid of app-coloured tiles with a launch arrow) | ArtCraft Launcher contributors | Original work, see [`assets/app-icon/README.md`](assets/app-icon/README.md) | MIT OR Apache-2.0, [`assets/app-icon/LICENSE.txt`](assets/app-icon/LICENSE.txt) |
+| `docs/brand/artcraft-logo.svg`, `artcraft-logo-white.svg` | ArtCraft wordmark, shown in the window header | ArtCraft Team | Supplied brand files, unmodified (same as PhotoCraft's `docs/brand/`) | **Not open source; not MIT or Apache-2.0.** ArtCraft trademark, [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) |
+| `docs/brand/artcraft-mark-64.png`, `artcraft-mark-black-44.png` | ArtCraft "A" mark, the tray / menu-bar icon | ArtCraft Team | Rendered unmodified from `docs/brand/artcraft-mark.svg` and `artcraft-mark-black.svg` by `packaging/icons.sh` | **Not open source; not MIT or Apache-2.0.** ArtCraft trademark, [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt) |
 | `assets/fonts/Inter-Regular.ttf`, `Inter-Medium.ttf`, `Inter-SemiBold.ttf` | Inter 4.001 (UI font) | The Inter Project Authors (Rasmus Andersson) | <https://github.com/rsms/inter> (copied from PhotoCraft's `assets/fonts/`) | SIL OFL 1.1, [`assets/fonts/OFL-Inter.txt`](assets/fonts/OFL-Inter.txt) |
 
 ### Craft App Suite icons

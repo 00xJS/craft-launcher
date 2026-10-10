@@ -1,6 +1,8 @@
-ArtCraft Launcher app icon (artcraft-launcher.svg, tray/*.svg and every file derived from them in
-this directory: artcraft-launcher-1024.png, artcraft-launcher.icns, artcraft-launcher.ico,
-hicolor/, tray/*.png).
+ArtCraft Launcher app icon (artcraft-launcher.svg and every file derived from it in this
+directory: artcraft-launcher-1024.png, artcraft-launcher.icns, artcraft-launcher.ico, hicolor/).
+
+The tray / menu-bar icon is not here and not covered by this license: it is the ArtCraft "A"
+mark, an ArtCraft trademark (docs/brand/, docs/brand/LICENSE-brand.txt).
 
 Original artwork made for this project: a grid of rounded tiles in the Craft apps' colours with a
 launch arrow, drawn directly as SVG. No third-party material. Licensed like the rest of

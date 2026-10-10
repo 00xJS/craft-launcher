@@ -29,9 +29,10 @@ Windows and Linux renders keep the whole tile with a hairline margin.
   `apps/artcraft-launcher/build.rs` and used by the MSI.
 - `hicolor/<size>/apps/ai.storyteller.artcraft-launcher.png` (16–512) and
   `hicolor/scalable/apps/ai.storyteller.artcraft-launcher.svg`: Linux icon theme.
-- `tray/tray-template.svg` → `tray/tray-template.png` (44×44, black on transparent): the macOS
-  menu-bar template image (22 pt @2x). Three squares and an arrow.
-- `tray/tray-color.svg` → `tray/tray-color.png` (64×64): the tray icon on Windows, Linux and FreeBSD.
+- The tray / menu-bar icon is **not** in this directory: it's the ArtCraft "A" mark, rendered by
+  `packaging/icons.sh` into `docs/brand/artcraft-mark-black-44.png` (macOS template, 22 pt @2x)
+  and `docs/brand/artcraft-mark-64.png` (Windows, Linux, FreeBSD). It is an ArtCraft trademark and
+  not MIT/Apache (`docs/brand/LICENSE-brand.txt`).
 
 ## Regenerate
 

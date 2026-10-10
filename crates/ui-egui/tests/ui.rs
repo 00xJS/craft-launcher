@@ -11,7 +11,7 @@ use artcraft_launcher_core::{Arch, Installed, Os, Platform, SUITE, version};
 use artcraft_launcher_ui_egui::settings::ViewMode;
 use artcraft_launcher_ui_egui::{Host, LauncherUi, Settings};
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 
 const NOW: i64 = 1_791_500_000;
 
@@ -142,6 +142,10 @@ fn grid_shows_every_status_and_installs_on_click() {
     h.get_by_label("Update to 0.5.0");
     h.get_by_label("Update to 0.6.0");
     h.get_by_label_contains("0.4.1 installed → 0.5.0 released");
+    h.get_by_label("Like Adobe Photoshop®");
+    h.get_by_label("Open Source Tools for Creatives, Makers, and Builders");
+    assert!(h.query_all_by_label_contains("Discord").count() >= 2); // header button and footer link
+    h.get_by_label_contains("Adobe, Photoshop, Illustrator");
     assert!(h.query_all_by_label("Coming soon").count() >= 1);
     h.get_by_label_contains("48 MB of 131 MB");
     h.get_by_label("Update all (2)").click();
@@ -179,6 +183,9 @@ fn table_view_and_light_theme() {
     let (mut h, sent) = harness(ViewMode::Table, egui::Theme::Light, true);
     h.run_steps(8);
     snapshot(&mut h, "table-light");
+    h.get_by_label("Adobe Photoshop®");
+    h.get_by_label("Microsoft Excel®");
+    h.get_by_label_contains("Avid and Pro Tools are trademarks");
     h.get_by_label("Update to 0.5.0").click();
     h.run_steps(2);
     assert!(sent.borrow().contains(&Command::Install { app: "photocraft".into() }));
@@ -199,6 +206,136 @@ fn switching_views_and_filters() {
     snapshot(&mut h, "table-updates-dark");
     assert!(h.query_by_label("WordCraft").is_none());
     h.get_by_label("PhotoCraft");
+}
+
+/// The app names in the order the table shows them.
+fn order(h: &Harness<'_, Option<LauncherUi>>) -> Vec<String> {
+    let names: Vec<&str> = SUITE.iter().map(|a| a.name).collect();
+    let mut found: Vec<(f32, String)> = h
+        .query_all(egui_kittest::kittest::by())
+        .filter_map(|n| {
+            let node = n.accesskit_node();
+            let label = node.label().or_else(|| node.value())?;
+            names.contains(&label.as_str()).then(|| (n.rect().top(), label))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut names: Vec<String> = found.into_iter().map(|(_, l)| l).collect();
+    // A label and its text can both carry the name.
+    names.dedup();
+    names
+}
+
+#[test]
+fn every_table_column_sorts_both_ways() {
+    let (mut h, _) = harness(ViewMode::Table, egui::Theme::Dark, true);
+    h.run_steps(6);
+    // Installed: highest first, apps that aren't installed last.
+    h.get_by_label("Installed").click();
+    h.run_steps(3);
+    let o = order(&h);
+    assert_eq!(&o[..4], ["EffectCraft", "PhotoCraft", "LightCraft", "WordCraft"], "{o:?}");
+    // Reversed: lowest first, the empty cells still last.
+    h.get_by_label("Installed").click();
+    h.run_steps(3);
+    let o = order(&h);
+    assert_eq!(&o[..4], ["WordCraft", "LightCraft", "PhotoCraft", "EffectCraft"], "{o:?}");
+    // Inspired by: A to Z.
+    h.get_by_label("Inspired by").click();
+    h.run_steps(3);
+    let o = order(&h);
+    assert_eq!(o.first().map(String::as_str), Some("PdfCraft"), "{o:?}"); // Adobe Acrobat
+    // Latest: highest version first, SoundCraft (no release) last.
+    h.get_by_label("Latest").click();
+    h.run_steps(3);
+    let o = order(&h);
+    assert_eq!(o.first().map(String::as_str), Some("VectorCraft"), "{o:?}"); // 0.7.0
+    snapshot(&mut h, "table-sorted-latest");
+    // App: Z to A on the second click.
+    h.get_by_label("App").click();
+    h.run_steps(3);
+    h.get_by_label("App").click();
+    h.run_steps(3);
+    let o = order(&h);
+    assert_eq!(o.first().map(String::as_str), Some("WordCraft"), "{o:?}");
+}
+
+#[test]
+fn settings_link_to_discord() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+    h.get_by_label("⚙").click();
+    h.run_steps(4);
+    snapshot(&mut h, "settings-dark");
+    h.get_by_label("Questions, ideas and news from the ArtCraft team");
+    // The header button and the one in Settings.
+    assert!(h.query_all_by_label_contains("Discord").count() >= 2);
+}
+
+#[test]
+fn links_to_the_website_github_and_each_apps_pages() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+    // Footer: website, GitHub and Discord.
+    for label in ["Website", "GitHub", "Discord"] {
+        assert!(h.query_all_by_label(label).count() >= 1, "{label}");
+    }
+    // Cards: every app links to its repo; only the seven classic apps have a website (plus the footer's).
+    let shown_cards = h.query_all_by_label("GitHub").count() - 1;
+    let shown_sites = h.query_all_by_label("Website").count() - 1;
+    assert!(shown_cards >= 7, "{shown_cards}");
+    assert_eq!(shown_sites, 7, "only classic apps have website pages");
+    // The table's … menu has the app's GitHub repo and, for a new app, no website yet.
+    let (mut h, _) = harness(ViewMode::Table, egui::Theme::Dark, true);
+    h.run_steps(6);
+    h.get_all_by_label("…").nth(7).unwrap().click(); // WordCraft
+    h.run_steps(3);
+    h.get_by_label("GitHub repository");
+    h.get_by_label("Website (coming soon)");
+}
+
+/// Clicks the `n`th widget labelled `label` and returns the URL the app asked to open.
+fn click_nth_opens(h: &mut Harness<'_, Option<LauncherUi>>, label: &str, n: usize) -> Option<String> {
+    h.get_all_by_label(label).nth(n)?.click();
+    for _ in 0..3 {
+        h.step();
+        let url = h.output().platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::OpenUrl(o) => Some(o.url.clone()),
+            _ => None,
+        });
+        if url.is_some() {
+            return url;
+        }
+    }
+    None
+}
+
+fn click_opens(h: &mut Harness<'_, Option<LauncherUi>>, label: &str) -> Option<String> {
+    click_nth_opens(h, label, 0)
+}
+
+/// Every URL the widgets labelled `label` open.
+fn all_opened(h: &mut Harness<'_, Option<LauncherUi>>, label: &str) -> Vec<String> {
+    let n = h.query_all_by_label(label).count();
+    (0..n).filter_map(|i| click_nth_opens(h, label, i)).collect()
+}
+
+#[test]
+fn links_open_the_right_pages() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+    assert_eq!(click_opens(&mut h, "💬  Discord").as_deref(), Some("https://discord.gg/artcraft"));
+    // The footer's ArtCraft links and each card's own pages.
+    let github = all_opened(&mut h, "GitHub");
+    assert!(github.contains(&"https://github.com/storytold".to_string()), "{github:?}");
+    assert!(github.contains(&"https://github.com/storytold/photocraft".to_string()), "{github:?}");
+    let sites = all_opened(&mut h, "Website");
+    assert!(sites.contains(&"https://getartcraft.com".to_string()), "{sites:?}");
+    assert!(sites.contains(&"https://getartcraft.com/apps/photocraft".to_string()), "{sites:?}");
+    // The … menu.
+    h.get_all_by_label("…").next().unwrap().click();
+    h.run_steps(3);
+    assert_eq!(click_opens(&mut h, "All releases").as_deref(), Some("https://github.com/storytold/photocraft/releases"));
 }
 
 #[test]

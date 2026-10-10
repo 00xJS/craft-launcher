@@ -29,8 +29,23 @@ pub enum SortKey {
     #[default]
     Suite,
     Name,
+    /// The product an app is inspired by.
+    InspiredBy,
     Status,
+    /// Installed version.
+    Installed,
+    /// Latest released version.
+    Latest,
+    /// Release date.
     Released,
+}
+
+impl SortKey {
+    /// The direction a first click sorts in: newest and highest first for dates and versions,
+    /// A to Z for text.
+    pub fn starts_descending(self) -> bool {
+        matches!(self, Self::Installed | Self::Latest | Self::Released)
+    }
 }
 
 /// How often to look for updates in the background.

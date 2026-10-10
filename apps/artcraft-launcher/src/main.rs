@@ -168,6 +168,12 @@ impl eframe::App for Shell {
                 tray::TrayAction::Toggle if self.visible => self.hide(ctx),
                 tray::TrayAction::Toggle | tray::TrayAction::Show => self.show(ctx),
                 tray::TrayAction::Check => self.ui.check_now(),
+                // Straight to the browser: works while the window is hidden in the tray.
+                tray::TrayAction::Open(url) => {
+                    if let Err(e) = artcraft_launcher_native::process::open(std::ffi::OsStr::new(url)) {
+                        log::warn!("couldn't open {url}: {e}");
+                    }
+                }
                 tray::TrayAction::Quit => self.quit(ctx),
             }
         }

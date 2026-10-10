@@ -111,6 +111,8 @@ impl NativeBackend {
         let platform = self.platform;
         let options = self.options();
         std::thread::spawn(move || {
+            // Leftovers from interrupted installs or older versions of the launcher.
+            http::clean_downloads(&paths.downloads(), Duration::from_secs(30 * 86_400));
             let snapshot = crate::detect::Snapshot::take();
             let manifest = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).clone();
             for app in &SUITE {

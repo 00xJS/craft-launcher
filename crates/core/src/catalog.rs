@@ -43,6 +43,11 @@ pub struct CraftApp {
 }
 
 impl CraftApp {
+    /// The product it's inspired by, with its registered-trademark sign (`Adobe Photoshop®`).
+    pub fn inspired_by(&self) -> String {
+        format!("{}®", self.like)
+    }
+
     /// `ai.storyteller.<id>`: macOS bundle id, Flatpak id and Linux desktop-file id.
     pub fn bundle_id(&self) -> String {
         format!("ai.storyteller.{}", self.id)
@@ -142,6 +147,21 @@ pub const SUITE: [CraftApp; 12] = [
     ),
 ];
 
+/// Shown wherever the products the apps are inspired by are named.
+pub const TRADEMARK_NOTICE: &str = "Adobe, Photoshop, Illustrator, Premiere Pro, Lightroom, Acrobat, After Effects and InDesign are either \
+registered trademarks or trademarks of Adobe in the United States and/or other countries. Microsoft, Word, PowerPoint and Excel are \
+trademarks of the Microsoft group of companies. Autodesk and AutoCAD are registered trademarks or trademarks of Autodesk, Inc. Avid \
+and Pro Tools are trademarks or registered trademarks of Avid Technology, Inc. All other trademarks are the property of their \
+respective owners. These names are used only to describe what each Craft App is for; the Craft App Suite is independent and is not \
+affiliated with, sponsored by or endorsed by any of these companies.";
+
+/// ArtCraft's website.
+pub const WEBSITE_URL: &str = "https://getartcraft.com";
+/// ArtCraft on GitHub: every Craft App's source.
+pub const GITHUB_URL: &str = "https://github.com/storytold";
+/// The ArtCraft community on Discord.
+pub const DISCORD_URL: &str = "https://discord.gg/artcraft";
+
 /// The launcher's own repo, checked so it can say when a newer launcher is out.
 pub const LAUNCHER_REPO: &str = "storytold/craft-launcher";
 /// The launcher's own asset stem.
@@ -162,6 +182,17 @@ mod tests {
         for a in &SUITE {
             assert_eq!(a.repo, format!("storytold/{}", a.id));
             assert_eq!(a.name.to_lowercase(), a.id);
+        }
+    }
+
+    #[test]
+    fn every_inspiring_product_is_covered_by_the_trademark_notice() {
+        for a in &SUITE {
+            assert!(a.inspired_by().ends_with('®'));
+            // The company and the product name both appear in the notice.
+            let (company, product) = a.like.split_once(' ').unwrap();
+            assert!(TRADEMARK_NOTICE.contains(company), "{company}");
+            assert!(TRADEMARK_NOTICE.contains(product), "{product}");
         }
     }
 

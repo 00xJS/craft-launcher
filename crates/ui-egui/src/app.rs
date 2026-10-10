@@ -272,19 +272,25 @@ impl LauncherUi {
                 self.toolbar(ui);
                 ui.add_space(6.0);
                 let ids = self.visible_ids();
-                egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                // The table is wider than a narrow window: let it scroll sideways too.
+                let scroll = match self.settings.view {
+                    ViewMode::Grid => egui::ScrollArea::vertical(),
+                    ViewMode::Table => egui::ScrollArea::both(),
+                };
+                scroll.auto_shrink(false).show(ui, |ui| {
                     if ids.is_empty() {
                         ui.add_space(40.0);
                         ui.vertical_centered(|ui| {
                             ui.label(egui::RichText::new("No apps match").size(16.0).color(t.text_muted));
                         });
-                        return;
+                    } else {
+                        match self.settings.view {
+                            ViewMode::Grid => self.grid(ui, &ids),
+                            ViewMode::Table => self.table(ui, &ids),
+                        }
                     }
-                    match self.settings.view {
-                        ViewMode::Grid => self.grid(ui, &ids),
-                        ViewMode::Table => self.table(ui, &ids),
-                    }
-                    ui.add_space(20.0);
+                    self.trademark_notice(ui);
+                    ui.add_space(16.0);
                 });
             });
         self.dialogs(&ctx, host);
@@ -314,19 +320,41 @@ impl LauncherUi {
             .collect();
         let platform = self.platform;
         let manage = self.caps.manage_apps;
+        let desc = self.settings.sort_descending;
+        let dir = |o: std::cmp::Ordering| if desc { o.reverse() } else { o };
+        // Empty cells (not installed, no release) go last whichever way the column sorts.
+        let opt = |a: Option<std::cmp::Ordering>, a_some: bool, b_some: bool| match (a_some, b_some) {
+            (true, true) => dir(a.unwrap_or(std::cmp::Ordering::Equal)),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => std::cmp::Ordering::Equal,
+        };
+        let installed = |e: &AppEntry| e.installed.as_ref().and_then(|i| i.version.clone());
+        let latest = |e: &AppEntry| e.release().and_then(|r| r.version.clone());
         list.sort_by(|(ia, a), (ib, b)| {
             let ord = match self.settings.sort {
-                SortKey::Suite => ia.cmp(ib),
-                SortKey::Name => a.app.name.cmp(b.app.name),
-                SortKey::Status => crate::model::status_rank(&a.status(platform, manage))
-                    .cmp(&crate::model::status_rank(&b.status(platform, manage)))
-                    .then(ia.cmp(ib)),
+                SortKey::Suite => dir(ia.cmp(ib)),
+                SortKey::Name => dir(a.app.name.cmp(b.app.name)),
+                SortKey::InspiredBy => dir(a.app.like.cmp(b.app.like)),
+                SortKey::Status => {
+                    dir(crate::model::status_rank(&a.status(platform, manage)).cmp(&crate::model::status_rank(&b.status(platform, manage))))
+                }
+                SortKey::Installed => {
+                    let (x, y) = (installed(a), installed(b));
+                    opt(x.as_ref().zip(y.as_ref()).map(|(x, y)| x.cmp_precedence(y)), x.is_some(), y.is_some())
+                }
+                SortKey::Latest => {
+                    let (x, y) = (latest(a), latest(b));
+                    opt(x.as_ref().zip(y.as_ref()).map(|(x, y)| x.cmp_precedence(y)), x.is_some(), y.is_some())
+                }
                 SortKey::Released => {
-                    let at = |e: &AppEntry| e.release().and_then(|r| r.published_at).unwrap_or(0);
-                    at(b).cmp(&at(a)).then(ia.cmp(ib))
+                    let at = |e: &AppEntry| e.release().and_then(|r| r.published_at);
+                    let (x, y) = (at(a), at(b));
+                    opt(x.zip(y).map(|(x, y)| x.cmp(&y)), x.is_some(), y.is_some())
                 }
             };
-            if self.settings.sort_descending { ord.reverse() } else { ord }
+            // Ties keep suite order.
+            ord.then(ia.cmp(ib))
         });
         list.into_iter().map(|(_, e)| e.app.id).collect()
     }

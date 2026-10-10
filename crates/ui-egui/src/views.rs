@@ -21,6 +21,9 @@ enum Primary {
     Unavailable(&'static str),
 }
 
+/// ArtCraft's tagline, under the launcher's name in the header.
+const TAGLINE: &str = "Open Source Tools for Creatives, Makers, and Builders";
+
 const CARD_MIN_W: f32 = 300.0;
 const CARD_H: f32 = 210.0;
 const GAP: f32 = 14.0;
@@ -29,12 +32,29 @@ impl LauncherUi {
     pub(crate) fn header(&mut self, ui: &mut Ui) {
         let t = Tokens::get(ui.ctx());
         ui.horizontal(|ui| {
-            ui.add(egui::Image::new(crate::icons::launcher()).fit_to_exact_size(vec2(38.0, 38.0)));
-            ui.add_space(4.0);
+            // The ArtCraft wordmark exactly as supplied, then the launcher's own name beside it.
+            // The logo and divider sit centred on the two-line name block beside them.
+            const ROW_H: f32 = 42.0;
+            let logo_size = vec2(24.0 * crate::icons::ARTCRAFT_LOGO_ASPECT, 24.0);
+            let (row, _) = ui.allocate_exact_size(vec2(logo_size.x, ROW_H), Sense::hover());
+            egui::Image::new(crate::icons::artcraft_logo(t.dark))
+                .alt_text("ArtCraft")
+                .paint_at(ui, egui::Rect::from_center_size(row.center(), logo_size));
+            ui.add_space(10.0);
+            let (rule, _) = ui.allocate_exact_size(vec2(1.0, ROW_H), Sense::hover());
+            ui.painter().rect_filled(egui::Rect::from_center_size(rule.center(), vec2(1.0, 30.0)), CornerRadius::ZERO, t.border_strong);
+            ui.add_space(10.0);
+            // Leave room for the controls on the right; the tagline gives way first.
+            let room = (ui.available_width() - 300.0).max(120.0);
             ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(RichText::new("ArtCraft Launcher").size(19.0).family(theme::semibold()).color(t.text));
-                ui.label(RichText::new(format!("Craft App Suite · {} apps", self.entries.len())).size(12.5).color(t.text_muted));
+                ui.set_max_width(room);
+                ui.spacing_mut().item_spacing.y = 1.0;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.label(RichText::new("Launcher").size(17.0).family(theme::semibold()).color(t.text));
+                    ui.add(egui::Label::new(RichText::new("  ·  Craft App Suite").size(14.0).color(t.text_muted)).truncate());
+                });
+                ui.add(egui::Label::new(RichText::new(TAGLINE).size(12.0).color(t.text_faint)).truncate());
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if widgets::icon_button(ui, "⚙", "Settings").clicked() {
@@ -53,6 +73,10 @@ impl LauncherUi {
                     &mut self.settings.view,
                     &[(ViewMode::Grid, "⊞  Grid", "Show apps as cards"), (ViewMode::Table, "☰  Table", "Show apps as a table")],
                 );
+                ui.add_space(8.0);
+                if widgets::discord_button(ui).clicked() {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(artcraft_launcher_core::catalog::DISCORD_URL));
+                }
             });
         });
     }
@@ -123,8 +147,19 @@ impl LauncherUi {
                         .selected_text(RichText::new(sort_label(self.settings.sort)).size(13.0))
                         .width(130.0)
                         .show_ui(ui, |ui| {
-                            for key in [SortKey::Suite, SortKey::Name, SortKey::Status, SortKey::Released] {
-                                ui.selectable_value(&mut self.settings.sort, key, sort_label(key));
+                            for key in [
+                                SortKey::Suite,
+                                SortKey::Name,
+                                SortKey::InspiredBy,
+                                SortKey::Status,
+                                SortKey::Installed,
+                                SortKey::Latest,
+                                SortKey::Released,
+                            ] {
+                                if ui.selectable_label(self.settings.sort == key, sort_label(key)).clicked() {
+                                    self.settings.sort = key;
+                                    self.settings.sort_descending = key.starts_descending();
+                                }
                             }
                         });
                 }
@@ -159,6 +194,14 @@ impl LauncherUi {
                     None => "No downloads for this system".into(),
                 };
                 ui.label(small(label));
+                ui.add_space(14.0);
+                // Right to left: these read Website · GitHub · Discord.
+                use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
+                widgets::small_link(ui, "Discord", DISCORD_URL);
+                ui.label(RichText::new("·").size(11.5).color(t.text_faint));
+                widgets::small_link(ui, "GitHub", GITHUB_URL);
+                ui.label(RichText::new("·").size(11.5).color(t.text_faint));
+                widgets::small_link(ui, "Website", WEBSITE_URL);
             });
         });
     }
@@ -232,6 +275,16 @@ impl LauncherUi {
         // A detached child: the card's contents never move the next card along.
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
         child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        // The app's own pages, top right: its website (classic apps) and its GitHub repo.
+        {
+            let corner = egui::Rect::from_min_max(egui::pos2(inner.right() - 130.0, inner.top()), egui::pos2(inner.right(), inner.top() + 18.0));
+            let mut links = ui.new_child(egui::UiBuilder::new().max_rect(corner).layout(egui::Layout::right_to_left(egui::Align::Min)));
+            links.spacing_mut().item_spacing.x = 10.0;
+            widgets::small_link(&mut links, "GitHub", &entry.app.repo_url());
+            if let Some(site) = entry.app.website() {
+                widgets::small_link(&mut links, "Website", &site);
+            }
+        }
         {
             let ui = &mut child;
             ui.horizontal(|ui| {
@@ -249,7 +302,7 @@ impl LauncherUi {
                         }
                     });
                     ui.add(egui::Label::new(RichText::new(entry.app.tagline).size(12.5).color(t.text_muted)).truncate());
-                    ui.add(egui::Label::new(RichText::new(format!("Like {}", entry.app.like)).size(11.5).color(t.text_faint)).truncate());
+                    ui.add(egui::Label::new(RichText::new(format!("Like {}", entry.app.inspired_by())).size(11.5).color(t.text_faint)).truncate());
                 });
             });
             ui.add_space(10.0);
@@ -286,7 +339,8 @@ impl LauncherUi {
                     .striped(false)
                     .vscroll(false)
                     .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::remainder().at_least(220.0).clip(true))
+                    .column(Column::remainder().at_least(200.0).clip(true))
+                    .column(Column::exact(172.0).clip(true))
                     .column(Column::exact(176.0))
                     .column(Column::exact(84.0))
                     .column(Column::exact(84.0))
@@ -295,32 +349,45 @@ impl LauncherUi {
                     .header(34.0, |mut header| {
                         for (key, label) in [
                             (Some(SortKey::Name), "App"),
+                            (Some(SortKey::InspiredBy), "Inspired by"),
                             (Some(SortKey::Status), "Status"),
-                            (None, "Installed"),
-                            (None, "Latest"),
+                            (Some(SortKey::Installed), "Installed"),
+                            (Some(SortKey::Latest), "Latest"),
                             (Some(SortKey::Released), "Released"),
                             (None, ""),
                         ] {
                             header.col(|ui| {
-                                let active = key == Some(self.settings.sort);
-                                let arrow = if active { if self.settings.sort_descending { " ↓" } else { " ↑" } } else { "" };
-                                let text = RichText::new(format!("{}{arrow}", label.to_uppercase()))
-                                    .size(11.0)
-                                    .family(theme::semibold())
-                                    .color(if active { t.text } else { t.text_faint });
-                                match key {
-                                    Some(k) => {
-                                        if ui
-                                            .add(egui::Label::new(text).sense(Sense::click()))
-                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .clicked()
-                                        {
-                                            sort_clicked = Some(k);
-                                        }
-                                    }
-                                    None => {
-                                        ui.label(text);
-                                    }
+                                let Some(k) = key else { return };
+                                let active = k == self.settings.sort;
+                                let tip = if active { "Click to reverse the order" } else { "Click to sort by this column" };
+                                // Measure first so the whole header cell (label + arrow) is the target.
+                                let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click());
+                                let hovered = resp.hovered();
+                                let color = if active || hovered { t.text } else { t.text_faint };
+                                let p = ui.painter();
+                                let font = egui::FontId::new(11.0, theme::semibold());
+                                let galley = p.layout_no_wrap(label.to_uppercase(), font.clone(), color);
+                                let text_pos = egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
+                                let arrow_x = text_pos.x + galley.size().x + 5.0;
+                                p.galley(text_pos, galley, color);
+                                // ▲ / ▼ for the active column; a faint hint on hover.
+                                let arrow = if active {
+                                    Some(self.settings.sort_descending)
+                                } else if hovered {
+                                    Some(k.starts_descending())
+                                } else {
+                                    None
+                                };
+                                if let Some(down) = arrow {
+                                    let c = egui::pos2(arrow_x + 4.0, rect.center().y);
+                                    let (tip_y, base_y) = if down { (c.y + 3.0, c.y - 2.0) } else { (c.y - 3.0, c.y + 2.0) };
+                                    let pts = vec![egui::pos2(c.x - 3.5, base_y), egui::pos2(c.x + 3.5, base_y), egui::pos2(c.x, tip_y)];
+                                    let arrow_color = if active { t.accent } else { t.text_faint };
+                                    p.add(egui::Shape::convex_polygon(pts, arrow_color, Stroke::NONE));
+                                }
+                                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+                                if resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                    sort_clicked = Some(k);
                                 }
                             });
                         }
@@ -339,6 +406,9 @@ impl LauncherUi {
                                         ui.label(RichText::new(entry.app.name).size(14.5).family(theme::semibold()).color(t.text));
                                         ui.add(egui::Label::new(RichText::new(entry.app.tagline).size(12.0).color(t.text_muted)).truncate());
                                     });
+                                });
+                                row.col(|ui| {
+                                    ui.add(egui::Label::new(RichText::new(entry.app.inspired_by()).size(13.0).color(t.text_muted)).truncate());
                                 });
                                 row.col(|ui| {
                                     let (text, tone) = model::entry_status_text(&entry, &status, self.caps.manage_apps);
@@ -377,9 +447,18 @@ impl LauncherUi {
                 self.settings.sort_descending = !self.settings.sort_descending;
             } else {
                 self.settings.sort = k;
-                self.settings.sort_descending = false;
+                self.settings.sort_descending = k.starts_descending();
             }
         }
+    }
+
+    /// The trademark notice under the grid and the table.
+    pub(crate) fn trademark_notice(&self, ui: &mut Ui) {
+        let t = Tokens::get(ui.ctx());
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(artcraft_launcher_core::catalog::TRADEMARK_NOTICE).size(11.0).color(t.text_faint)).wrap());
     }
 
     // ---- actions -------------------------------------------------------------------------
@@ -564,11 +643,14 @@ impl LauncherUi {
                     ui.close();
                 }
             };
-            if let Some(site) = entry.app.website() {
-                link(ui, "Website", site);
+            match entry.app.website() {
+                Some(site) => link(ui, "Website", site),
+                None => {
+                    ui.add_enabled(false, egui::Button::new("Website (coming soon)"));
+                }
             }
+            link(ui, "GitHub repository", entry.app.repo_url());
             link(ui, "All releases", entry.app.releases_url());
-            link(ui, "Source code", entry.app.repo_url());
         });
     }
 }
@@ -577,7 +659,10 @@ fn sort_label(k: SortKey) -> &'static str {
     match k {
         SortKey::Suite => "Suite order",
         SortKey::Name => "Name",
+        SortKey::InspiredBy => "Inspired by",
         SortKey::Status => "Status",
+        SortKey::Installed => "Installed version",
+        SortKey::Latest => "Latest version",
         SortKey::Released => "Newest release",
     }
 }

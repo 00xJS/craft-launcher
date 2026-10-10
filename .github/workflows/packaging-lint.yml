@@ -69,8 +69,9 @@ jobs:
       - name: Icons the app embeds exist
         run: |
           for f in assets/app-icon/artcraft-launcher.ico assets/app-icon/artcraft-launcher.icns \
-            assets/app-icon/artcraft-launcher-1024.png assets/app-icon/tray/tray-template.png \
-            assets/app-icon/tray/tray-color.png assets/app-icon/hicolor/scalable/apps/ai.storyteller.artcraft-launcher.svg; do
+            assets/app-icon/artcraft-launcher-1024.png docs/brand/artcraft-mark-black-44.png \
+            docs/brand/artcraft-mark-64.png docs/brand/artcraft-logo.svg docs/brand/artcraft-logo-white.svg \
+            assets/app-icon/hicolor/scalable/apps/ai.storyteller.artcraft-launcher.svg; do
             test -s "$f" || { echo "::error::missing $f"; exit 1; }
           done
           for s in 16 24 32 48 64 128 256 512; do

@@ -9,6 +9,7 @@ pub enum TrayAction {
     Toggle,
     Show,
     Check,
+    Open(&'static str),
     Quit,
 }
 
@@ -22,11 +23,13 @@ pub struct Tray {
 }
 
 fn load_icon() -> Result<tray_icon::Icon, String> {
-    // macOS draws a black "template" glyph in the menu bar's own colours; elsewhere a colour icon.
+    // The ArtCraft "A" mark (an ArtCraft trademark, not MIT/Apache: docs/brand/LICENSE-brand.txt).
+    // macOS tints the black mark to the menu bar's colours as a template image; elsewhere the
+    // blue mark is shown as supplied.
     let bytes: &[u8] = if cfg!(target_os = "macos") {
-        include_bytes!("../../../assets/app-icon/tray/tray-template.png")
+        include_bytes!("../../../docs/brand/artcraft-mark-black-44.png")
     } else {
-        include_bytes!("../../../assets/app-icon/tray/tray-color.png")
+        include_bytes!("../../../docs/brand/artcraft-mark-64.png")
     };
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png).map_err(|e| e.to_string())?.into_rgba8();
     let (w, h) = img.dimensions();
@@ -38,9 +41,15 @@ impl Tray {
     pub fn new(wake: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self, String> {
         let show = MenuItem::new("Show ArtCraft Launcher", true, None);
         let check = MenuItem::new("Check for Updates", true, None);
+        use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
+        let website = MenuItem::new("Visit getartcraft.com", true, None);
+        let github = MenuItem::new("ArtCraft on GitHub", true, None);
+        let discord = MenuItem::new("Join the ArtCraft Discord", true, None);
         let quit = MenuItem::new("Quit ArtCraft Launcher", true, None);
         let menu = Menu::new();
-        menu.append_items(&[&show, &check, &PredefinedMenuItem::separator(), &quit]).map_err(|e| e.to_string())?;
+        menu.append_items(&[&show, &check, &PredefinedMenuItem::separator(), &website, &github, &discord, &PredefinedMenuItem::separator(), &quit])
+            .map_err(|e| e.to_string())?;
+        let links = [(website.id().clone(), WEBSITE_URL), (github.id().clone(), GITHUB_URL), (discord.id().clone(), DISCORD_URL)];
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_icon(load_icon()?)
@@ -62,6 +71,8 @@ impl Tray {
                     TrayAction::Check
                 } else if e.id == ids.2 {
                     TrayAction::Quit
+                } else if let Some((_, url)) = links.iter().find(|(id, _)| *id == e.id) {
+                    TrayAction::Open(url)
                 } else {
                     return;
                 };

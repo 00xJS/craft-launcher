@@ -16,7 +16,7 @@ workspace = true
 artcraft-launcher-core = { workspace = true }
 artcraft-launcher-ui-egui = { workspace = true }
 artcraft-launcher-native = { workspace = true }
-eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence"] }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "accesskit", "wayland", "x11", "persistence", "links"] }
 egui = { workspace = true }
 log = { workspace = true }
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }

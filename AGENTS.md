@@ -65,10 +65,11 @@ settings file must produce an error the user can act on, never a panic. Shared s
 ### Other rules
 
 1. **Assets need attribution.** Every bundled asset gets a row in `ATTRIBUTION.md` (path, title,
-   author, source, license) in the same change. The ArtCraft logos in `docs/brand/` are not open
-   source (`docs/brand/LICENSE-brand.txt`).
-2. **Icons are generated.** Edit `assets/app-icon/artcraft-launcher.svg` or `assets/app-icon/tray/*.svg`,
-   then run `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS) and commit the outputs.
+   author, source, license) in the same change. The ArtCraft name, logo and "A" mark in
+   `docs/brand/` (the header logo and the tray icon) are trademarks, **not MIT/Apache**
+   (`docs/brand/LICENSE-brand.txt`): use them exactly as supplied, never redraw or recolor them.
+2. **Icons are generated.** Edit `assets/app-icon/artcraft-launcher.svg` (the tray icon is the
+   supplied ArtCraft mark, rendered from `docs/brand/`), then run `packaging/icons.sh` (needs `resvg`; `iconutil` on macOS) and commit the outputs.
    `assets/app-icons/` is copied verbatim from each app's repo (`assets/app-icon/hicolor/128x128/apps/ai.storyteller.<app>.png`);
    refresh it from there, never redraw.
 3. **Never break wasm.** `cargo xtask wasm` must pass. File-system, process and OS code is

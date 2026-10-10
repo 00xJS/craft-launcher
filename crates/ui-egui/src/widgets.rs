@@ -201,3 +201,37 @@ pub fn glyph_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
 }
+
+/// "Discord": opens the ArtCraft community server. Outlined in Discord's blurple so it reads as
+/// a community link rather than an app action.
+pub fn discord_button(ui: &mut Ui) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let blurple = Color32::from_rgb(0x58, 0x65, 0xf2);
+    let text_color = if t.dark { Color32::from_rgb(0xc9, 0xcd, 0xfb) } else { Color32::from_rgb(0x40, 0x4e, 0xed) };
+    let btn = egui::Button::new(RichText::new("💬  Discord").size(13.0).family(theme::medium()).color(text_color))
+        .fill(tint(blurple, if t.dark { 0.16 } else { 0.08 }))
+        .stroke(Stroke::new(1.0, tint(blurple, if t.dark { 0.55 } else { 0.40 })))
+        .corner_radius(theme::RADIUS_SMALL + 1)
+        .min_size(vec2(0.0, 32.0));
+    ui.add(btn).on_hover_text("Join the ArtCraft community on Discord").on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A quiet text link: faint until hovered, then accent and underlined. Opens `url` in the browser.
+pub fn small_link(ui: &mut Ui, text: &str, url: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let font = egui::FontId::new(11.5, theme::medium());
+    let galley = ui.painter().layout_no_wrap(text.to_string(), font, t.text_faint);
+    let (rect, resp) = ui.allocate_exact_size(galley.size(), Sense::click());
+    let color = if resp.hovered() { t.accent } else { t.text_faint };
+    let p = ui.painter();
+    p.galley_with_override_text_color(rect.min, galley, color);
+    if resp.hovered() {
+        p.line_segment([egui::pos2(rect.left(), rect.bottom()), egui::pos2(rect.right(), rect.bottom())], Stroke::new(1.0, color));
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, true, text));
+    let resp = resp.on_hover_text(url).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.clicked() {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+    }
+    resp
+}

@@ -367,6 +367,35 @@ pub fn partial_bytes(dest: &Path, size: u64) -> Option<u64> {
     std::fs::metadata(part_path(dest, size)).ok().map(|m| m.len()).filter(|n| *n > 0)
 }
 
+/// Removes leftovers from the download folder: files in an old or unknown naming scheme, and
+/// paused downloads untouched for `max_age` (they're for releases long since replaced). Files
+/// written within the last minute are always kept, so a running download is never touched.
+pub fn clean_downloads(dir: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let age = meta.modified().ok().and_then(|m| now.duration_since(m).ok()).unwrap_or_default();
+        if age < Duration::from_secs(60) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Current partial files are `<file>.<size>.part`.
+        let current_part = name
+            .strip_suffix(".part")
+            .and_then(|stem| stem.rsplit_once('.'))
+            .is_some_and(|(_, size)| !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit()));
+        if !current_part || age > max_age {
+            log::info!("removing stale download {}", path.display());
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 /// Throws away a paused download.
 pub fn discard_partial(dest: &Path, size: u64) {
     let _ = std::fs::remove_file(part_path(dest, size));
@@ -433,6 +462,28 @@ fn host(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleaning_keeps_current_partial_files_and_removes_leftovers() {
+        let dir = tempfile::tempdir().unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let make = |name: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"x").unwrap();
+            std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+            p
+        };
+        let keep = make("photocraft-0.5.0-macos-universal.dmg.150000.part");
+        let legacy = make("photocraft-0.5.0-macos-universal.part");
+        let finished = make("photocraft-0.5.0-macos-universal.dmg");
+        let fresh = dir.path().join("x.part");
+        std::fs::write(&fresh, b"x").unwrap();
+        clean_downloads(dir.path(), Duration::from_secs(30 * 86_400));
+        assert!(keep.exists() && fresh.exists());
+        assert!(!legacy.exists() && !finished.exists());
+        clean_downloads(dir.path(), Duration::from_secs(60));
+        assert!(!keep.exists());
+    }
 
     #[test]
     fn reads_content_ranges() {
