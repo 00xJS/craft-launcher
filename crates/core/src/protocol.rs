@@ -33,7 +33,11 @@ pub enum Command {
     Reveal {
         app: String,
     },
-    /// Stop a running download.
+    /// Pause a running download, keeping what's downloaded so far (`Install` resumes it).
+    Pause {
+        app: String,
+    },
+    /// Stop a running download, or throw away a paused one.
     Cancel {
         app: String,
     },
@@ -67,11 +71,29 @@ pub enum JobPhase {
         done: u64,
         total: u64,
     },
+    /// The connection dropped; trying again shortly, from where it stopped.
+    Reconnecting {
+        done: u64,
+        total: u64,
+    },
     Verifying,
     /// Waiting on the OS installer (MSI) or copying files.
     Installing,
     Removing,
 }
+
+/// A partly downloaded file waiting to be resumed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PausedDownload {
+    pub done: u64,
+    /// 0 when unknown.
+    pub total: u64,
+}
+
+/// The `JobFinished` error a paused job ends with (not a failure).
+pub const PAUSED: &str = "paused";
+/// The `JobFinished` error a cancelled job ends with (not a failure).
+pub const CANCELLED: &str = "cancelled";
 
 /// Where release information came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +132,12 @@ pub enum Event {
     Progress {
         app: String,
         phase: JobPhase,
+    },
+    /// A download is paused (by the user, by a lost connection, or left over from an earlier
+    /// run) and can be resumed; `None` once there's no paused download.
+    Paused {
+        app: String,
+        download: Option<PausedDownload>,
     },
     /// A job ended: `Ok` carries a short success message, `Err` what went wrong.
     JobFinished {

@@ -13,13 +13,12 @@
 //! running app is never replaced, and a new copy is fully in place before the old one goes.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 
 use artcraft_launcher_core::protocol::JobPhase;
 use artcraft_launcher_core::release::{self, Asset, Release};
 use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind};
 
-use crate::http::Http;
+use crate::http::{Http, Stop, Transfer, Verified};
 use crate::manifest::Record;
 use crate::paths::Paths;
 use crate::process;
@@ -28,7 +27,7 @@ use crate::process;
 pub struct Job<'a> {
     pub http: &'a Http,
     pub paths: &'a Paths,
-    pub cancel: &'a AtomicBool,
+    pub stop: &'a Stop,
     pub phase: &'a mut dyn FnMut(JobPhase),
 }
 
@@ -41,14 +40,15 @@ pub fn install(
     kind: PackageKind,
     existing: Option<&Installed>,
     job: &mut Job<'_>,
-) -> Result<Option<Record>, String> {
+) -> Result<(Option<Record>, Verified), String> {
     if let Some(inst) = existing
         && inst.source.launcher_can_update()
         && process::is_running(Path::new(&inst.location))
     {
         return Err(format!("{} is running. Quit it, then try again.", app.name));
     }
-    let file = download(release, asset, job)?;
+    let (file, verified) = download(release, asset, job)?;
+    // Past this point the install can't be interrupted halfway.
     (job.phase)(JobPhase::Installing);
     #[allow(unused_variables)]
     let version = release.version_label();
@@ -69,7 +69,12 @@ pub fn install(
     };
     // The download has served its purpose either way; a failed install starts fresh next time.
     let _ = std::fs::remove_file(&file);
-    result
+    result.map(|r| (r, verified))
+}
+
+/// Where `asset` is downloaded to (and its partial file kept while unfinished).
+pub fn download_path(paths: &Paths, asset: &Asset) -> PathBuf {
+    paths.downloads().join(&asset.name)
 }
 
 #[allow(dead_code)]
@@ -119,29 +124,39 @@ pub fn available_kinds() -> Vec<PackageKind> {
     Vec::new()
 }
 
-/// Fetches `asset` into the download folder and checks it against its SHA-256.
-fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<PathBuf, String> {
+/// Fetches `asset` into the download folder, checked against its published SHA-256: GitHub's
+/// per-file digest, else the release's `SHA256SUMS.txt`. A release with neither still installs,
+/// checked by size only, and says so.
+fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<(PathBuf, Verified), String> {
     if !release::valid_file_name(&asset.name) {
         return Err("the release has an unexpected file name".into());
     }
     let sha = match &asset.sha256 {
-        Some(s) => s.clone(),
-        None => {
-            // Older releases predate GitHub's per-asset digests: use SHA256SUMS.txt.
-            let sums_asset = release.sums_asset().ok_or("this release publishes no checksums, so it can't be verified")?;
-            let text = job.http.get_text(&sums_asset.url)?.ok_or("this release's checksum list is missing")?;
-            release::parse_sha256sums(&text)
-                .into_iter()
-                .find(|(_, n)| *n == asset.name)
-                .map(|(h, _)| h)
-                .ok_or("this file isn't in the release's checksum list")?
-        }
+        Some(s) => Some(s.clone()),
+        None => published_checksum(release, asset, job.http)?,
     };
-    let dest = job.paths.downloads().join(&asset.name);
+    if sha.is_none() {
+        log::warn!("{}: no published checksum; checking the size only", asset.name);
+    }
+    let dest = download_path(job.paths, asset);
     let phase = &mut *job.phase;
-    job.http.download(&asset.url, &dest, asset.size, &sha, job.cancel, &mut |done, total| phase(JobPhase::Downloading { done, total }))?;
+    let verified = job.http.download(&asset.url, &dest, asset.size, sha.as_deref(), job.stop, &mut |t| match t {
+        Transfer::Bytes { done, total } => phase(JobPhase::Downloading { done, total }),
+        Transfer::Reconnecting { done, total } => phase(JobPhase::Reconnecting { done, total }),
+    })?;
     (job.phase)(JobPhase::Verifying);
-    Ok(dest)
+    Ok((dest, verified))
+}
+
+/// The file's line in the release's `SHA256SUMS.txt`. `Ok(None)` only when the release really
+/// publishes no checksum for it; a list that exists but can't be fetched is an error, so a
+/// network hiccup never downgrades the check.
+fn published_checksum(release: &Release, asset: &Asset, http: &Http) -> Result<Option<String>, String> {
+    let Some(sums) = release.sums_asset() else { return Ok(None) };
+    let Some(text) = http.get_text(&sums.url).map_err(|e| format!("couldn't fetch the release's checksums ({e}). Try again"))? else {
+        return Ok(None);
+    };
+    Ok(release::parse_sha256sums(&text).into_iter().find(|(_, n)| *n == asset.name).map(|(h, _)| h))
 }
 
 /// Removes an installed copy.

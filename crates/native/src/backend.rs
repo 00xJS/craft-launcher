@@ -7,11 +7,13 @@ use std::time::{Duration, Instant};
 
 use artcraft_launcher_core::catalog::{LAUNCHER_ID, LAUNCHER_REPO};
 use artcraft_launcher_core::platform::{Arch, Os, Platform, pick_asset};
-use artcraft_launcher_core::protocol::{Backend, BackendOptions, Capabilities, Command, Event, JobPhase, LatestRelease, Source};
-use artcraft_launcher_core::release::Release;
-use artcraft_launcher_core::{CraftApp, Installed, SUITE, version};
+use artcraft_launcher_core::protocol::{
+    Backend, BackendOptions, Capabilities, Command, Event, JobPhase, LatestRelease, PAUSED, PausedDownload, Source,
+};
+use artcraft_launcher_core::release::{Asset, Release};
+use artcraft_launcher_core::{CraftApp, Installed, PackageKind, SUITE, version};
 
-use crate::http::Http;
+use crate::http::{self, Http, Stop};
 use crate::install::{self, Job};
 use crate::manifest::Manifest;
 use crate::paths::Paths;
@@ -29,7 +31,7 @@ struct Shared {
     waker: Waker,
     latest: Mutex<HashMap<String, Release>>,
     installed: Mutex<HashMap<String, Installed>>,
-    jobs: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    jobs: Mutex<HashMap<String, Arc<Stop>>>,
     manifest: Mutex<Manifest>,
     options: Mutex<BackendOptions>,
     checking: AtomicBool,
@@ -105,6 +107,9 @@ impl NativeBackend {
 
     fn detect_all(&self) {
         let shared = self.shared.clone();
+        let paths = self.paths.clone();
+        let platform = self.platform;
+        let options = self.options();
         std::thread::spawn(move || {
             let snapshot = crate::detect::Snapshot::take();
             let manifest = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).clone();
@@ -118,6 +123,10 @@ impl NativeBackend {
                     };
                 }
                 shared.emit(Event::Detected { app: app.id.to_string(), installed: found });
+            }
+            // Downloads paused (or cut off by quitting) in an earlier run.
+            for app in &SUITE {
+                report_partial(app, &shared, &paths, platform, &options);
             }
         });
     }
@@ -181,13 +190,13 @@ impl NativeBackend {
 
     fn start_job(&self, app_id: &str, uninstall: bool) {
         let Some(app) = CraftApp::by_id(app_id) else { return };
-        let cancel = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(Stop::default());
         {
             let mut jobs = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner);
             if jobs.contains_key(app.id) {
                 return;
             }
-            jobs.insert(app.id.to_string(), cancel.clone());
+            jobs.insert(app.id.to_string(), stop.clone());
         }
         let shared = self.shared.clone();
         let paths = self.paths.clone();
@@ -210,8 +219,16 @@ impl NativeBackend {
                     None => Err(format!("{} isn't installed", app.name)),
                 }
             } else {
-                run_install(app, &shared, &paths, http.as_ref(), platform, &options, existing.as_ref(), record.as_ref(), &cancel)
+                let r = run_install(app, &shared, &paths, http.as_ref(), platform, &options, existing.as_ref(), record.as_ref(), &stop);
+                // Stopped by the connection rather than by the user: say so, and how to go on.
+                match r {
+                    Err(e) if e == PAUSED && stop.check().is_ok() => {
+                        Err("The download paused because the connection keeps dropping. Press Resume to continue where it stopped.".into())
+                    }
+                    other => other,
+                }
             };
+            report_partial(app, &shared, &paths, platform, &options);
             // Look again: the result is whatever is on disk now.
             let manifest = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).clone();
             let found = crate::detect::detect(app, &manifest, &crate::detect::Snapshot::take());
@@ -243,7 +260,7 @@ fn run_install(
     options: &BackendOptions,
     existing: Option<&Installed>,
     record: Option<&crate::manifest::Record>,
-    cancel: &AtomicBool,
+    stop: &Stop,
 ) -> Result<String, String> {
     let http = http.ok_or("secure connections aren't available on this system")?;
     let platform = platform.ok_or("this system isn't supported")?;
@@ -254,11 +271,8 @@ fn run_install(
         .get(app.id)
         .cloned()
         .ok_or("the latest release hasn't been found yet. Check for updates first.")?;
-    let stems: Vec<&str> = app.stems().collect();
-    let kinds = install::choose_kinds(existing, record, &options.kinds);
-    let (asset, kind) = pick_asset(&release, &stems, platform, &kinds)
+    let (asset, kind) = planned_asset(app, &release, platform, options, existing, record)
         .ok_or_else(|| format!("{} {} has no download for {}", app.name, release.version_label(), platform.label()))?;
-    let asset = asset.clone();
     let mut last_emit = Instant::now() - Duration::from_secs(1);
     let mut phase = |p: JobPhase| {
         // Downloads report thousands of times; the UI needs ~20 a second.
@@ -268,8 +282,8 @@ fn run_install(
         last_emit = Instant::now();
         shared.emit(Event::Progress { app: app.id.to_string(), phase: p });
     };
-    let mut job = Job { http, paths, cancel, phase: &mut phase };
-    let new_record = install::install(app, &release, &asset, kind, existing, &mut job)?;
+    let mut job = Job { http, paths, stop, phase: &mut phase };
+    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, &mut job)?;
     {
         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
         let changed = match new_record {
@@ -282,7 +296,42 @@ fn run_install(
         }
     }
     let verb = if existing.is_some() { "updated to" } else { "installed:" };
-    Ok(format!("{} {verb} {}", app.name, release.version_label()))
+    let note = match verified {
+        http::Verified::Checksum => "",
+        http::Verified::SizeOnly => " (this release publishes no checksum, so only its size was checked)",
+    };
+    Ok(format!("{} {verb} {}{note}", app.name, release.version_label()))
+}
+
+/// The file an install of `app` would download now: same format as the installed copy, else
+/// the user's preference, else the best this system supports.
+fn planned_asset(
+    app: &CraftApp,
+    release: &Release,
+    platform: Platform,
+    options: &BackendOptions,
+    existing: Option<&Installed>,
+    record: Option<&crate::manifest::Record>,
+) -> Option<(Asset, PackageKind)> {
+    let stems: Vec<&str> = app.stems().collect();
+    let kinds = install::choose_kinds(existing, record, &options.kinds);
+    pick_asset(release, &stems, platform, &kinds).map(|(a, k)| (a.clone(), k))
+}
+
+/// Tells the UI whether `app` has a paused download waiting.
+fn report_partial(app: &CraftApp, shared: &Shared, paths: &Paths, platform: Option<Platform>, options: &BackendOptions) {
+    let download = partial_for(app, shared, paths, platform, options).map(|(asset, done)| PausedDownload { done, total: asset.size });
+    shared.emit(Event::Paused { app: app.id.to_string(), download });
+}
+
+/// The planned download of `app` and how many bytes of it are already on disk.
+fn partial_for(app: &CraftApp, shared: &Shared, paths: &Paths, platform: Option<Platform>, options: &BackendOptions) -> Option<(Asset, u64)> {
+    let release = shared.latest.lock().unwrap_or_else(PoisonError::into_inner).get(app.id).cloned()?;
+    let existing = shared.installed.lock().unwrap_or_else(PoisonError::into_inner).get(app.id).cloned();
+    let record = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner).apps.get(app.id).cloned();
+    let (asset, _) = planned_asset(app, &release, platform?, options, existing.as_ref(), record.as_ref())?;
+    let done = http::partial_bytes(&install::download_path(paths, &asset), asset.size)?;
+    Some((asset, done))
 }
 
 /// The machine's real architecture: an x64 launcher on Windows on ARM should still pick ARM64
@@ -307,9 +356,24 @@ impl Backend for NativeBackend {
             Command::Detect => self.detect_all(),
             Command::Install { app } => self.start_job(&app, false),
             Command::Uninstall { app } => self.start_job(&app, true),
+            Command::Pause { app } => {
+                if let Some(stop) = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner).get(&app) {
+                    stop.pause();
+                }
+            }
             Command::Cancel { app } => {
-                if let Some(flag) = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner).get(&app) {
-                    flag.store(true, Ordering::Relaxed);
+                let running = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner).get(&app).cloned();
+                match running {
+                    Some(stop) => stop.cancel(),
+                    // A paused download: throw its partial file away.
+                    None => {
+                        if let Some(def) = CraftApp::by_id(&app)
+                            && let Some((asset, _)) = partial_for(def, &self.shared, &self.paths, self.platform, &self.options())
+                        {
+                            http::discard_partial(&install::download_path(&self.paths, &asset), asset.size);
+                        }
+                        self.shared.emit(Event::Paused { app, download: None });
+                    }
                 }
             }
             Command::Launch { app } => {

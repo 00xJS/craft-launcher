@@ -163,3 +163,41 @@ pub fn human_bytes(n: u64) -> String {
         format!("{:.0} KB", (n / 1024.0).max(1.0))
     }
 }
+
+/// Which drawn glyph a [`glyph_button`] shows (drawn, so no font needs the symbol).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Glyph {
+    Pause,
+    Close,
+}
+
+/// A small square button with a drawn glyph.
+pub fn glyph_button(ui: &mut Ui, glyph: Glyph, tip: &str) -> Response {
+    let t = Tokens::get(ui.ctx());
+    let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+    let hovered = resp.hovered();
+    let p = ui.painter();
+    if hovered {
+        p.rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS_SMALL),
+            if t.dark { Color32::from_rgb(0x2b, 0x30, 0x3c) } else { Color32::from_rgb(0xe4, 0xe7, 0xee) },
+        );
+    }
+    let c = if hovered { t.text } else { t.text_muted };
+    let m = rect.center();
+    match glyph {
+        Glyph::Pause => {
+            for dx in [-3.5, 3.5] {
+                p.rect_filled(egui::Rect::from_center_size(m + vec2(dx, 0.0), vec2(3.0, 11.0)), CornerRadius::same(1), c);
+            }
+        }
+        Glyph::Close => {
+            let s = 4.5;
+            p.line_segment([m + vec2(-s, -s), m + vec2(s, s)], Stroke::new(1.6, c));
+            p.line_segment([m + vec2(-s, s), m + vec2(s, -s)], Stroke::new(1.6, c));
+        }
+    }
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tip));
+    resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand)
+}

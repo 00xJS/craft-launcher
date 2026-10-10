@@ -1,7 +1,7 @@
 //! What the UI knows about each app.
 
 use artcraft_launcher_core::platform::{Platform, pick_asset};
-use artcraft_launcher_core::protocol::{JobPhase, LatestRelease};
+use artcraft_launcher_core::protocol::{JobPhase, LatestRelease, PausedDownload};
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::status::{self, AppStatus, Latest};
 use artcraft_launcher_core::{CraftApp, Installed};
@@ -14,11 +14,13 @@ pub struct AppEntry {
     /// Detection has answered at least once.
     pub detected: bool,
     pub job: Option<JobPhase>,
+    /// A download waiting to be resumed.
+    pub paused: Option<PausedDownload>,
 }
 
 impl AppEntry {
     pub fn new(app: &'static CraftApp) -> Self {
-        Self { app, latest: None, installed: None, detected: false, job: None }
+        Self { app, latest: None, installed: None, detected: false, job: None, paused: None }
     }
 
     pub fn release(&self) -> Option<&Release> {
@@ -84,6 +86,18 @@ pub fn status_text(status: &AppStatus, manage_apps: bool) -> (&'static str, Tone
         AppStatus::Installed => ("Installed", Tone::Neutral),
         AppStatus::Unavailable => ("Not available here", Tone::Faint),
         AppStatus::NoRelease => ("Coming soon", Tone::Faint),
+    }
+}
+
+/// [`status_text`], but saying so when a download is paused or reconnecting.
+pub fn entry_status_text(e: &AppEntry, status: &AppStatus, manage_apps: bool) -> (&'static str, Tone) {
+    match (e.job, e.paused) {
+        (Some(JobPhase::Reconnecting { .. }), _) => ("Reconnecting…", Tone::Warn),
+        (Some(JobPhase::Downloading { .. }), _) if status.is_installed() => ("Updating…", Tone::Info),
+        (Some(JobPhase::Downloading { .. }), _) => ("Downloading…", Tone::Info),
+        (None, Some(_)) if status.is_installed() => ("Update paused", Tone::Warn),
+        (None, Some(_)) => ("Download paused", Tone::Warn),
+        _ => status_text(status, manage_apps),
     }
 }
 

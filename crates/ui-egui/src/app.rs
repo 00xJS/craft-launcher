@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use artcraft_launcher_core::protocol::{Backend, BackendOptions, Capabilities, Command, Event, LatestRelease, Source};
+use artcraft_launcher_core::protocol::{Backend, BackendOptions, CANCELLED, Capabilities, Command, Event, LatestRelease, PAUSED, Source};
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::status::AppStatus;
 use artcraft_launcher_core::{Platform, SUITE};
@@ -175,13 +175,21 @@ impl LauncherUi {
                 }
                 false
             }
+            Event::Paused { app, download } => {
+                if let Some(e) = self.entry_mut(&app) {
+                    e.paused = download;
+                }
+                false
+            }
             Event::JobFinished { app, result } => {
                 if let Some(e) = self.entry_mut(&app) {
                     e.job = None;
                 }
                 match result {
                     Ok(msg) => self.toast(ctx, msg, false),
-                    Err(e) if e == "cancelled" => self.toast(ctx, "Cancelled", false),
+                    // The paused card says it all.
+                    Err(e) if e == PAUSED => {}
+                    Err(e) if e == CANCELLED => self.toast(ctx, "Download cancelled", false),
                     Err(e) => self.toast(ctx, e, true),
                 }
                 true

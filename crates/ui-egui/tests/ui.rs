@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, JobPhase, LatestRelease, Source};
+use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, JobPhase, LatestRelease, PausedDownload, Source};
 use artcraft_launcher_core::release::{Asset, Release};
 use artcraft_launcher_core::status::InstallSource;
 use artcraft_launcher_core::{Arch, Installed, Os, Platform, SUITE, version};
@@ -91,6 +91,8 @@ fn events() -> Vec<Event> {
         ev.push(Event::Detected { app: app.id.into(), installed: inst });
     }
     ev.push(Event::Progress { app: "filmcraft".into(), phase: JobPhase::Downloading { done: 48 << 20, total: 131 << 20 } });
+    ev.push(Event::Paused { app: "deckcraft".into(), download: Some(PausedDownload { done: 30 << 20, total: 120 << 20 }) });
+    ev.push(Event::Progress { app: "gridcraft".into(), phase: JobPhase::Reconnecting { done: 10 << 20, total: 90 << 20 } });
     ev.push(Event::CheckFinished { at: NOW - 180, source: Source::GitHubApi, rate_limited_until: None });
     ev
 }
@@ -135,7 +137,7 @@ fn grid_shows_every_status_and_installs_on_click() {
     h.run_steps(8);
     snapshot(&mut h, "grid-dark");
     // Statuses the user asked for: available, installed and up to date, update with version.
-    assert!(h.query_all_by_label("Available to install").count() >= 5);
+    assert!(h.query_all_by_label("Available to install").count() >= 3);
     assert!(h.query_all_by_label("Installed · up to date").count() >= 2);
     h.get_by_label("Update to 0.5.0");
     h.get_by_label("Update to 0.6.0");
@@ -147,6 +149,29 @@ fn grid_shows_every_status_and_installs_on_click() {
     let installs: Vec<_> = sent.borrow().iter().filter_map(|c| if let Command::Install { app } = c { Some(app.clone()) } else { None }).collect();
     assert_eq!(installs.len(), 2, "{installs:?}");
     assert!(installs.contains(&"photocraft".to_string()) && installs.contains(&"effectcraft".to_string()));
+}
+
+#[test]
+fn downloads_can_be_paused_resumed_and_discarded() {
+    let (mut h, sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(4);
+    // Bring the paused and reconnecting apps on screen.
+    if let Some(l) = h.state_mut().as_mut() {
+        l.settings.filter = artcraft_launcher_ui_egui::settings::Filter::NotInstalled;
+    }
+    h.run_steps(6);
+    snapshot(&mut h, "grid-downloads-dark");
+    h.get_by_label("Download paused");
+    h.get_by_label("Reconnecting…");
+    h.get_by_label_contains("· 25%").click();
+    h.run_steps(2);
+    assert!(sent.borrow().contains(&Command::Install { app: "deckcraft".into() }));
+    h.get_by_label("Discard download").click();
+    h.run_steps(2);
+    assert!(sent.borrow().contains(&Command::Cancel { app: "deckcraft".into() }));
+    h.get_all_by_label("Pause download").next().unwrap().click();
+    h.run_steps(2);
+    assert!(sent.borrow().iter().any(|c| matches!(c, Command::Pause { .. })));
 }
 
 #[test]
@@ -181,6 +206,6 @@ fn web_build_offers_downloads() {
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, false);
     h.run_steps(8);
     snapshot(&mut h, "web-grid-dark");
-    assert!(h.query_all_by_label("Download for macOS").count() >= 10);
+    assert!(h.query_all_by_label("Download for macOS").count() >= 8);
     assert!(h.query_by_label("Install").is_none());
 }

@@ -229,7 +229,11 @@ impl LauncherUi {
 
         let status = entry.status(self.platform, self.caps.manage_apps);
         let inner = rect.shrink2(vec2(16.0, 14.0));
-        ui.scope_builder(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+        // A detached child: the card's contents never move the next card along.
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::top_down(egui::Align::Min)));
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        {
+            let ui = &mut child;
             ui.horizontal(|ui| {
                 if let Some(icon) = crate::icons::app(entry.app.id) {
                     ui.add(egui::Image::new(icon).fit_to_exact_size(vec2(54.0, 54.0)));
@@ -250,7 +254,7 @@ impl LauncherUi {
             });
             ui.add_space(10.0);
             ui.horizontal(|ui| {
-                let (text, tone) = model::status_text(&status, self.caps.manage_apps);
+                let (text, tone) = model::entry_status_text(&entry, &status, self.caps.manage_apps);
                 let tip = entry.failure().map(|f| format!("Couldn't check for updates: {f}"));
                 let r = widgets::pill(ui, text, tone);
                 if let Some(tip) = tip {
@@ -262,7 +266,7 @@ impl LauncherUi {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                 ui.horizontal(|ui| self.actions(ui, &entry, &status, inner.width()));
             });
-        });
+        }
     }
 
     // ---- table ---------------------------------------------------------------------------
@@ -337,7 +341,7 @@ impl LauncherUi {
                                     });
                                 });
                                 row.col(|ui| {
-                                    let (text, tone) = model::status_text(&status, self.caps.manage_apps);
+                                    let (text, tone) = model::entry_status_text(&entry, &status, self.caps.manage_apps);
                                     let r = widgets::pill(ui, text, tone);
                                     if let Some(f) = entry.failure() {
                                         r.on_hover_text(format!("Couldn't check for updates: {f}"));
@@ -410,25 +414,67 @@ impl LauncherUi {
         let id = entry.app.id.to_string();
         let main_w = (width - 40.0).max(120.0);
         if let Some(phase) = entry.job {
-            let (fraction, caption) = match phase {
-                JobPhase::Downloading { done, total } if total > 0 => {
-                    let f = done as f32 / total as f32;
-                    let caption = if main_w >= 200.0 {
-                        format!("Downloading {} of {} · {:.0}%", widgets::human_bytes(done), widgets::human_bytes(total), f * 100.0)
-                    } else {
-                        format!("{} of {} · {:.0}%", widgets::human_bytes(done), widgets::human_bytes(total), f * 100.0)
-                    };
-                    (Some(f), caption)
-                }
-                JobPhase::Downloading { done, .. } => (None, format!("Downloading {}", widgets::human_bytes(done))),
-                JobPhase::Verifying => (None, "Verifying checksum…".into()),
-                JobPhase::Installing => (None, "Installing…".into()),
-                JobPhase::Removing => (None, "Removing…".into()),
+            // Two small buttons (pause, cancel) beside the bar while downloading.
+            let bar_w = (width - 88.0).max(100.0);
+            let short = bar_w < 200.0;
+            let amount = |done: u64, total: u64| {
+                if total > 0 { format!("{} of {}", widgets::human_bytes(done), widgets::human_bytes(total)) } else { widgets::human_bytes(done) }
             };
-            widgets::progress(ui, fraction, &caption, t.accent, main_w);
-            if matches!(phase, JobPhase::Downloading { .. }) && widgets::icon_button(ui, "×", "Cancel").clicked() {
-                self.send(Command::Cancel { app: id });
+            let (fraction, caption, color) = match phase {
+                JobPhase::Downloading { done, total } => {
+                    let f = (total > 0).then(|| done as f32 / total as f32);
+                    let pct = f.map(|f| format!(" · {:.0}%", f * 100.0)).unwrap_or_default();
+                    let caption = if bar_w < 150.0 {
+                        match f {
+                            Some(f) => format!("{:.0}% of {}", f * 100.0, widgets::human_bytes(total)),
+                            None => widgets::human_bytes(done),
+                        }
+                    } else if short {
+                        format!("{}{pct}", amount(done, total))
+                    } else {
+                        format!("Downloading {}{pct}", amount(done, total))
+                    };
+                    (f, caption, t.accent)
+                }
+                JobPhase::Reconnecting { done, total } => {
+                    let f = (total > 0).then(|| done as f32 / total as f32);
+                    (f, if short { "Reconnecting…".into() } else { format!("Reconnecting… {}", amount(done, total)) }, t.warn)
+                }
+                JobPhase::Verifying => (None, "Verifying checksum…".into(), t.accent),
+                JobPhase::Installing => (None, "Installing…".into(), t.accent),
+                JobPhase::Removing => (None, "Removing…".into(), t.accent),
+            };
+            let downloading = matches!(phase, JobPhase::Downloading { .. } | JobPhase::Reconnecting { .. });
+            widgets::progress(ui, fraction, &caption, color, if downloading { bar_w } else { main_w });
+            if downloading {
+                if widgets::glyph_button(ui, widgets::Glyph::Pause, "Pause download").clicked() {
+                    self.send(Command::Pause { app: id.clone() });
+                }
+                if widgets::glyph_button(ui, widgets::Glyph::Close, "Cancel download").clicked() {
+                    self.send(Command::Cancel { app: id });
+                }
             }
+            return;
+        }
+        if let Some(p) = entry.paused
+            && self.caps.manage_apps
+        {
+            let pct = if p.total > 0 { format!(" · {:.0}%", p.done as f32 / p.total as f32 * 100.0) } else { String::new() };
+            // Resume, discard (32) and the menu (~40), with spacing, within `width`.
+            let label = if width < 260.0 { format!("Resume{pct}") } else { format!("Resume download{pct}") };
+            let resp = widgets::primary(ui, &label, t.accent, (width - 96.0).max(90.0));
+            let tip = if p.total > 0 {
+                format!("{} of {} downloaded", widgets::human_bytes(p.done), widgets::human_bytes(p.total))
+            } else {
+                format!("{} downloaded", widgets::human_bytes(p.done))
+            };
+            if resp.on_hover_text(tip).clicked() {
+                self.send(Command::Install { app: id.clone() });
+            }
+            if widgets::glyph_button(ui, widgets::Glyph::Close, "Discard download").clicked() {
+                self.send(Command::Cancel { app: id.clone() });
+            }
+            self.menu(ui, entry, status);
             return;
         }
         match self.primary_action(entry, status) {

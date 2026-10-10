@@ -2,7 +2,9 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+use artcraft_launcher_core::protocol::{CANCELLED, PAUSED};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -59,6 +61,8 @@ impl Http {
             .tls_config(tls())
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
+            // ureq has no idle timeout: cap each attempt instead, and resume where it stopped.
+            .timeout_recv_body(Some(ATTEMPT_BODY_TIME))
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
             .build()
@@ -126,66 +130,274 @@ impl Http {
         }
     }
 
-    /// Downloads `url` to `dest`, checking the size (when known) and SHA-256 as it goes.
-    /// `progress(done, total)` is called often; `cancel` stops the download.
+    /// Downloads `url` to `dest`, checking it against `sha256` when a checksum is published (and
+    /// always against `size`, when known).
+    ///
+    /// Tolerant by design: an interrupted or stalled transfer resumes where it stopped (HTTP range
+    /// requests) with backoff; a paused download, or one left by an earlier run, continues from
+    /// its partial file; a file that fails its checksum is fetched once more from scratch before
+    /// giving up. When the connection stays down, the download ends paused (`PAUSED`), never
+    /// losing what it has. `stop` pauses or cancels it between reads.
     pub fn download(
         &self,
         url: &str,
         dest: &Path,
         size: u64,
-        sha256: &str,
-        cancel: &AtomicBool,
-        progress: &mut dyn FnMut(u64, u64),
-    ) -> Result<(), String> {
-        let mut resp = self.download.get(url).call().map_err(|e| format!("couldn't start the download ({e})"))?;
-        let status = resp.status().as_u16();
-        if status != 200 {
-            return Err(format!("the download failed (HTTP {status})"));
-        }
-        let total = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).unwrap_or(size);
-        if size > 0 && total != size {
-            return Err(format!("the server offered {total} bytes, but the release lists {size}"));
-        }
-        let limit = if total > 0 { total } else { 8 << 30 };
-        let mut reader = resp.body_mut().with_config().limit(limit).reader();
+        sha256: Option<&str>,
+        stop: &Stop,
+        progress: &mut dyn FnMut(Transfer),
+    ) -> Result<Verified, String> {
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
         }
-        let part = dest.with_extension("part");
-        let mut file = std::fs::File::create(&part).map_err(|e| format!("couldn't save the download ({e})"))?;
-        let mut hasher = Sha256::new();
-        let mut buf = vec![0u8; 256 * 1024];
-        let mut done: u64 = 0;
-        progress(0, total);
+        let verified = if sha256.is_some() { Verified::Checksum } else { Verified::SizeOnly };
+        // A finished copy from an earlier attempt that never got installed.
+        if dest.is_file() && matches_published(dest, size, sha256) {
+            progress(Transfer::Bytes { done: size, total: size });
+            return Ok(verified);
+        }
+        // The partial file is named after the release file and its size; if it still turns out
+        // to belong to something else, the checksum catches it and the download starts over.
+        let part = part_path(dest, size);
+        let mut fresh_start_used = false;
         loop {
-            if cancel.load(Ordering::Relaxed) {
-                drop(file);
-                let _ = std::fs::remove_file(&part);
-                return Err("cancelled".into());
+            if let Err(e) = self.fetch_resuming(url, &part, size, stop, progress) {
+                if e == CANCELLED {
+                    let _ = std::fs::remove_file(&part);
+                } else if e != PAUSED {
+                    log::warn!("download of {url} failed: {e}");
+                }
+                return Err(e);
             }
-            let n = reader.read(&mut buf).map_err(|e| format!("the download was interrupted ({e})"))?;
+            if matches_published(&part, size, sha256) {
+                std::fs::rename(&part, dest).map_err(|e| format!("couldn't save the download ({e})"))?;
+                return Ok(verified);
+            }
+            let _ = std::fs::remove_file(&part);
+            if fresh_start_used {
+                return Err("the download doesn't match its published checksum, so it wasn't installed".into());
+            }
+            // A resumed file can be spliced wrongly by a misbehaving proxy: try once from zero.
+            log::warn!("checksum mismatch for {url}; downloading again from the start");
+            fresh_start_used = true;
+        }
+    }
+
+    /// Fetches `url` into `part`, resuming from whatever `part` already holds. Retries while the
+    /// transfer keeps making progress; after several attempts in a row get nowhere, it stops and
+    /// reports `PAUSED` so the user can resume later.
+    fn fetch_resuming(&self, url: &str, part: &Path, size: u64, stop: &Stop, progress: &mut dyn FnMut(Transfer)) -> Result<(), String> {
+        let mut fruitless = 0u32;
+        loop {
+            stop.check()?;
+            let have = std::fs::metadata(part).map(|m| m.len()).unwrap_or(0);
+            if fruitless >= MAX_FRUITLESS_ATTEMPTS {
+                log::warn!("{url}: no progress after {fruitless} attempts; pausing");
+                return Err(PAUSED.into());
+            }
+            if fruitless > 0 {
+                progress(Transfer::Reconnecting { done: have, total: size });
+                // 1 s, 2 s, 4 s … 30 s, staying responsive to Pause and Cancel.
+                let wait = Duration::from_secs((1u64 << (fruitless - 1).min(5)).min(30));
+                let until = std::time::Instant::now() + wait;
+                while std::time::Instant::now() < until {
+                    stop.check()?;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            if size > 0 && have == size {
+                return Ok(());
+            }
+            if size > 0 && have > size {
+                let _ = std::fs::remove_file(part);
+                continue;
+            }
+            match self.attempt(url, part, have, size, stop, progress) {
+                Ok(()) => return Ok(()),
+                Err(AttemptError::Stopped(e)) => return Err(e),
+                Err(AttemptError::Fatal(e)) => return Err(e),
+                Err(AttemptError::Retry { error, progressed }) => {
+                    log::info!("{url}: {error}; retrying");
+                    fruitless = if progressed { 1 } else { fruitless + 1 };
+                }
+            }
+        }
+    }
+
+    /// One request: appends to `part` from byte `have`.
+    fn attempt(&self, url: &str, part: &Path, have: u64, size: u64, stop: &Stop, progress: &mut dyn FnMut(Transfer)) -> Result<(), AttemptError> {
+        let retry = |error: String, progressed: bool| AttemptError::Retry { error, progressed };
+        // Binaries are already compressed; ask for the bytes exactly as published.
+        let mut req = self.download.get(url).header("Accept-Encoding", "identity");
+        if have > 0 {
+            req = req.header("Range", &format!("bytes={have}-"));
+        }
+        let mut resp = match req.call() {
+            Ok(r) => r,
+            Err(e) => return Err(retry(format!("couldn't connect: {e}"), false)),
+        };
+        let status = resp.status().as_u16();
+        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let (start, total) = match status {
+            200 => (0, header("content-length").and_then(|v| v.parse::<u64>().ok()).filter(|n| *n > 0).unwrap_or(size)),
+            206 => match header("content-range").as_deref().and_then(parse_content_range) {
+                Some((start, Some(total))) => (start, total),
+                Some((start, None)) => (start, size),
+                None => return Err(retry("the server sent an unreadable partial response".into(), false)),
+            },
+            // The range is past the end: the part file is already complete (or wrong; the
+            // checksum decides).
+            416 if have > 0 => return Ok(()),
+            404 | 410 => return Err(AttemptError::Fatal("the file is no longer on the release page".into())),
+            401 | 403 => return Err(retry(format!("the server refused the download (HTTP {status})"), false)),
+            s => return Err(retry(format!("HTTP {s}"), false)),
+        };
+        if size > 0 && total != size {
+            return Err(AttemptError::Fatal(format!("the server offered {total} bytes, but the release lists {size}")));
+        }
+        // Open the part file at the right place: a 200 restarts it, a 206 continues it.
+        let mut file = match (status, start) {
+            (206, s) if s == have => std::fs::OpenOptions::new().append(true).open(part),
+            _ => std::fs::File::create(part),
+        }
+        .map_err(|e| AttemptError::Fatal(format!("couldn't save the download ({e})")))?;
+        let mut done = if status == 206 && start == have { have } else { 0 };
+        // We check the length and checksum ourselves; the reader's limit is only a backstop
+        // against an endless body. (ureq errors once the limit is *reached*, so leave headroom.)
+        let remaining = if total > 0 { total.saturating_sub(done) } else { MAX_DOWNLOAD };
+        let mut reader = resp.body_mut().with_config().limit(remaining.saturating_add(1 << 20)).reader();
+        let mut buf = vec![0u8; 256 * 1024];
+        let at_start = done;
+        progress(Transfer::Bytes { done, total });
+        loop {
+            stop.check().map_err(AttemptError::Stopped)?;
+            let n = match reader.read(&mut buf) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = file.sync_all();
+                    return Err(retry(format!("the connection dropped: {e}"), done > at_start));
+                }
+            };
             if n == 0 {
                 break;
             }
-            let chunk = buf.get(..n).ok_or("read past the buffer")?;
-            hasher.update(chunk);
-            file.write_all(chunk).map_err(|e| format!("couldn't save the download ({e})"))?;
+            let chunk = buf.get(..n).ok_or_else(|| AttemptError::Fatal("read past the buffer".into()))?;
+            file.write_all(chunk).map_err(|e| AttemptError::Fatal(format!("couldn't save the download ({e}). Is the disk full?")))?;
             done = done.saturating_add(n as u64);
-            progress(done, total);
+            if total > 0 && done > total {
+                return Err(retry("the server sent more than the file's size".into(), false));
+            }
+            progress(Transfer::Bytes { done, total });
         }
-        file.sync_all().map_err(|e| format!("couldn't save the download ({e})"))?;
-        drop(file);
-        if total > 0 && done != total {
-            let _ = std::fs::remove_file(&part);
-            return Err(format!("the download stopped early ({done} of {total} bytes)"));
+        file.sync_all().map_err(|e| AttemptError::Fatal(format!("couldn't save the download ({e})")))?;
+        if total > 0 && done < total {
+            return Err(retry(format!("the connection closed early ({done} of {total} bytes)"), done > at_start));
         }
-        let got = hex(&hasher.finalize());
-        if !got.eq_ignore_ascii_case(sha256) {
-            let _ = std::fs::remove_file(&part);
-            return Err("the download doesn't match its published checksum, so it wasn't installed".into());
-        }
-        std::fs::rename(&part, dest).map_err(|e| format!("couldn't save the download ({e})"))
+        Ok(())
     }
+}
+
+/// Attempts in a row without any new bytes before pausing (about two minutes of backoff).
+const MAX_FRUITLESS_ATTEMPTS: u32 = 8;
+/// The longest one request may spend receiving; the next request resumes.
+const ATTEMPT_BODY_TIME: Duration = Duration::from_secs(5 * 60);
+/// Backstop when the server doesn't say how big the file is.
+const MAX_DOWNLOAD: u64 = 16 << 30;
+
+/// What a download reports as it goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Transfer {
+    Bytes {
+        done: u64,
+        total: u64,
+    },
+    /// The connection dropped; waiting before trying again.
+    Reconnecting {
+        done: u64,
+        total: u64,
+    },
+}
+
+/// How a finished download was checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verified {
+    /// Against the release's published SHA-256.
+    Checksum,
+    /// The release publishes no checksum: only its size could be checked.
+    SizeOnly,
+}
+
+/// Asks a running download to pause (keeping its partial file) or cancel (deleting it).
+#[derive(Debug, Default)]
+pub struct Stop(AtomicU8);
+
+impl Stop {
+    const RUN: u8 = 0;
+    const PAUSE: u8 = 1;
+    const CANCEL: u8 = 2;
+
+    pub fn pause(&self) {
+        let _ = self.0.compare_exchange(Self::RUN, Self::PAUSE, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(Self::CANCEL, Ordering::SeqCst);
+    }
+
+    /// `Err(PAUSED | CANCELLED)` once asked to stop.
+    pub fn check(&self) -> Result<(), String> {
+        match self.0.load(Ordering::SeqCst) {
+            Self::PAUSE => Err(PAUSED.into()),
+            Self::CANCEL => Err(CANCELLED.into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Whether a file on disk is the published one: its checksum when there is one, else its size.
+fn matches_published(path: &Path, size: u64, sha256: Option<&str>) -> bool {
+    match sha256 {
+        Some(sha) => sha256_file(path).is_ok_and(|h| h.eq_ignore_ascii_case(sha)),
+        None => size > 0 && std::fs::metadata(path).is_ok_and(|m| m.len() == size),
+    }
+}
+
+/// How much of a download is already on disk (a paused or interrupted one).
+pub fn partial_bytes(dest: &Path, size: u64) -> Option<u64> {
+    std::fs::metadata(part_path(dest, size)).ok().map(|m| m.len()).filter(|n| *n > 0)
+}
+
+/// Throws away a paused download.
+pub fn discard_partial(dest: &Path, size: u64) {
+    let _ = std::fs::remove_file(part_path(dest, size));
+}
+
+enum AttemptError {
+    /// Paused or cancelled.
+    Stopped(String),
+    /// Won't get better by trying again.
+    Fatal(String),
+    Retry {
+        error: String,
+        progressed: bool,
+    },
+}
+
+/// `<dest>.<size>.part`: where an unfinished download of `dest` is kept.
+fn part_path(dest: &Path, size: u64) -> std::path::PathBuf {
+    let tag = size.to_string();
+    let mut name = dest.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
+    name.push(format!(".{tag}.part"));
+    dest.with_file_name(name)
+}
+
+/// `bytes 100-199/1000` → (100, Some(1000)); `bytes 100-199/*` → (100, None).
+fn parse_content_range(v: &str) -> Option<(u64, Option<u64>)> {
+    let rest = v.trim().strip_prefix("bytes ")?;
+    let (range, total) = rest.split_once('/')?;
+    let start = range.split_once('-')?.0.trim().parse().ok()?;
+    let total = if total.trim() == "*" { None } else { Some(total.trim().parse().ok()?) };
+    Some((start, total))
 }
 
 /// The certificate authorities the operating system trusts.
@@ -216,4 +428,242 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
 
 fn host(url: &str) -> &str {
     url.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_content_ranges() {
+        assert_eq!(parse_content_range("bytes 100-199/1000"), Some((100, Some(1000))));
+        assert_eq!(parse_content_range("bytes 5-9/*"), Some((5, None)));
+        assert_eq!(parse_content_range("items 1-2/3"), None);
+        assert_eq!(parse_content_range("bytes x-9/10"), None);
+    }
+
+    use std::io::{BufRead, BufReader};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// How the fake server answers one request.
+    #[derive(Clone, Copy, Debug)]
+    enum Reply {
+        /// The whole file.
+        Full,
+        /// Promise the whole file, send `n` bytes, hang up.
+        DropAfter(usize),
+        /// Honour `Range` with a 206.
+        Ranged,
+        /// The right length, wrong bytes.
+        Corrupt,
+        /// 404.
+        Missing,
+    }
+
+    /// Serves `body` over plain HTTP following `script`, one reply per connection; records the
+    /// `Range` header each request carried.
+    fn serve(body: Vec<u8>, script: Vec<Reply>) -> (String, Arc<Mutex<Vec<Option<String>>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/file.bin", listener.local_addr().unwrap());
+        let ranges = Arc::new(Mutex::new(Vec::new()));
+        let seen = ranges.clone();
+        std::thread::spawn(move || {
+            for reply in script {
+                let Ok((mut stream, _)) = listener.accept() else { return };
+                let mut range = None;
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
+                        range = v.trim().trim_end_matches('-').parse::<usize>().ok();
+                    }
+                }
+                seen.lock().unwrap().push(range.map(|r| r.to_string()));
+                let len = body.len();
+                let _ = match reply {
+                    Reply::Full => {
+                        write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n").and_then(|()| stream.write_all(&body))
+                    }
+                    Reply::DropAfter(n) => write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n")
+                        .and_then(|()| stream.write_all(&body[..n])),
+                    Reply::Corrupt => write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n")
+                        .and_then(|()| stream.write_all(&vec![b'x'; len])),
+                    Reply::Missing => write!(stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                    Reply::Ranged => {
+                        let from = range.unwrap_or(0);
+                        write!(
+                            stream,
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {from}-{}/{len}\r\nConnection: close\r\n\r\n",
+                            len - from,
+                            len - 1
+                        )
+                        .and_then(|()| stream.write_all(&body[from..]))
+                    }
+                };
+            }
+        });
+        (url, ranges)
+    }
+
+    fn body() -> (Vec<u8>, String) {
+        let body: Vec<u8> = (0..700_000u32).map(|i| (i % 251) as u8).collect();
+        let sha = hex(&Sha256::digest(&body));
+        (body, sha)
+    }
+
+    fn run(script: Vec<Reply>) -> (Result<Vec<u8>, String>, Vec<Option<String>>) {
+        let (body, sha) = body();
+        let (url, ranges) = serve(body.clone(), script);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        let http = Http::new().unwrap();
+        let mut last = (0, 0);
+        let result = http.download(&url, &dest, body.len() as u64, Some(&sha), &Stop::default(), &mut |t| {
+            if let Transfer::Bytes { done, total } = t {
+                last = (done, total);
+            }
+        });
+        let result = result.map(|v| {
+            assert_eq!(v, Verified::Checksum);
+            std::fs::read(&dest).unwrap()
+        });
+        if result.is_ok() {
+            assert_eq!(last, (body.len() as u64, body.len() as u64));
+        }
+        let seen = ranges.lock().unwrap().clone();
+        (result, seen)
+    }
+
+    #[test]
+    fn a_complete_body_of_exactly_the_published_size_succeeds() {
+        // The bug this guards: a reader limit equal to the size failed on the final read.
+        let (result, _) = run(vec![Reply::Full]);
+        assert_eq!(result.unwrap(), body().0);
+    }
+
+    #[test]
+    fn a_dropped_connection_resumes_where_it_stopped() {
+        let (result, ranges) = run(vec![Reply::DropAfter(300_000), Reply::Ranged]);
+        assert_eq!(result.unwrap(), body().0);
+        assert_eq!(ranges, [None, Some("300000".to_string())]);
+    }
+
+    #[test]
+    fn a_server_that_ignores_ranges_starts_over() {
+        let (result, _) = run(vec![Reply::DropAfter(123_456), Reply::Full]);
+        assert_eq!(result.unwrap(), body().0);
+    }
+
+    #[test]
+    fn corrupt_data_is_fetched_again_and_never_kept() {
+        let (result, _) = run(vec![Reply::Corrupt, Reply::Full]);
+        assert_eq!(result.unwrap(), body().0);
+        let (result, _) = run(vec![Reply::Corrupt, Reply::Corrupt]);
+        assert!(result.unwrap_err().contains("checksum"));
+    }
+
+    #[test]
+    fn without_a_checksum_the_size_is_still_checked() {
+        let (body, _) = body();
+        let (url, _) = serve(body.clone(), vec![Reply::Full]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        let v = Http::new().unwrap().download(&url, &dest, body.len() as u64, None, &Stop::default(), &mut |_| {}).unwrap();
+        assert_eq!(v, Verified::SizeOnly);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+    }
+
+    #[test]
+    fn pausing_keeps_the_partial_file_and_resuming_continues_it() {
+        let (body, sha) = body();
+        let len = body.len() as u64;
+        let (url, ranges) = serve(body.clone(), vec![Reply::Full, Reply::Ranged]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        let http = Http::new().unwrap();
+        let stop = Stop::default();
+        // Pause as soon as the first bytes arrive.
+        let err = http
+            .download(&url, &dest, len, Some(&sha), &stop, &mut |t| {
+                if matches!(t, Transfer::Bytes { done, .. } if done > 0) {
+                    stop.pause();
+                }
+            })
+            .unwrap_err();
+        assert_eq!(err, PAUSED);
+        let kept = partial_bytes(&dest, len).unwrap();
+        assert!(kept > 0 && kept < len, "{kept}");
+        http.download(&url, &dest, len, Some(&sha), &Stop::default(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert_eq!(ranges.lock().unwrap()[1], Some(kept.to_string()));
+    }
+
+    #[test]
+    fn cancelling_throws_the_partial_file_away() {
+        let (body, sha) = body();
+        let len = body.len() as u64;
+        let (url, _) = serve(body, vec![Reply::Full]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        let stop = Stop::default();
+        let err = Http::new()
+            .unwrap()
+            .download(&url, &dest, len, Some(&sha), &stop, &mut |t| {
+                if matches!(t, Transfer::Bytes { done, .. } if done > 0) {
+                    stop.cancel();
+                }
+            })
+            .unwrap_err();
+        assert_eq!(err, CANCELLED);
+        assert_eq!(partial_bytes(&dest, len), None);
+    }
+
+    #[test]
+    fn a_missing_file_fails_at_once() {
+        let (result, ranges) = run(vec![Reply::Missing, Reply::Full]);
+        assert!(result.unwrap_err().contains("no longer"));
+        assert_eq!(ranges.len(), 1);
+    }
+
+    #[test]
+    fn a_partial_file_from_an_earlier_run_is_continued() {
+        let (body, sha) = body();
+        let (url, ranges) = serve(body.clone(), vec![Reply::Ranged]);
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("file.bin");
+        std::fs::write(part_path(&dest, body.len() as u64), &body[..500_000]).unwrap();
+        assert_eq!(partial_bytes(&dest, body.len() as u64), Some(500_000));
+        Http::new().unwrap().download(&url, &dest, body.len() as u64, Some(&sha), &Stop::default(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert_eq!(*ranges.lock().unwrap(), [Some("500000".to_string())]);
+        assert!(!part_path(&dest, body.len() as u64).exists());
+    }
+
+    /// Live: a real Craft App release asset (`cargo test -p artcraft-launcher-native -- --ignored`).
+    #[test]
+    #[ignore = "needs network access"]
+    fn downloads_a_real_release_asset() {
+        let http = Http::new().unwrap();
+        let Fetched::Body { text, .. } = http.get_api("https://api.github.com/repos/storytold/wordcraft/releases/latest", None).unwrap() else {
+            panic!("no release")
+        };
+        let release = artcraft_launcher_core::release::parse_github_release(&text, "storytold/wordcraft").unwrap();
+        let sums_url = &release.sums_asset().unwrap().url;
+        let sums = artcraft_launcher_core::release::parse_sha256sums(&http.get_text(sums_url).unwrap().unwrap());
+        let asset = release.assets.iter().find(|a| a.name.ends_with("freebsd-x86_64.tar.gz")).unwrap();
+        let sha = asset.sha256.clone().or_else(|| sums.iter().find(|(_, n)| *n == asset.name).map(|(h, _)| h.clone())).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join(&asset.name);
+        http.download(&asset.url, &dest, asset.size, Some(&sha), &Stop::default(), &mut |_| {}).unwrap();
+        assert_eq!(std::fs::metadata(&dest).unwrap().len(), asset.size);
+    }
+
+    #[test]
+    fn partial_files_are_named_after_the_file_and_size() {
+        assert_eq!(part_path(Path::new("/d/photocraft.dmg"), 9), Path::new("/d/photocraft.dmg.9.part"));
+    }
 }
