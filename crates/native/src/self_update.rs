@@ -18,12 +18,12 @@
 
 use std::path::{Path, PathBuf};
 
+use artcraft_launcher_core::PackageKind;
 use artcraft_launcher_core::catalog::LAUNCHER;
 use artcraft_launcher_core::platform::{Platform, pick_asset};
 use artcraft_launcher_core::protocol::JobPhase;
 use artcraft_launcher_core::release::Release;
 use artcraft_launcher_core::version::{self, Version};
-use artcraft_launcher_core::PackageKind;
 #[cfg(target_os = "macos")]
 use artcraft_launcher_core::{InstallSource, Installed};
 
@@ -59,10 +59,30 @@ impl Install {
     }
 }
 
-/// The version this launcher counts as. `ARTCRAFT_LAUNCHER_PRETEND_VERSION=0.0.1` makes an
-/// installed copy believe it's old, to try the self-update against the current release.
+/// Makes an installed copy believe it's this version, to try the self-update against the current
+/// release. The restart helper drops it, so it lasts one run.
+const PRETEND_VAR: &str = "ARTCRAFT_LAUNCHER_PRETEND_VERSION";
+
+/// The version this launcher counts as (see [`PRETEND_VAR`]).
 pub fn current_version() -> Option<Version> {
-    std::env::var("ARTCRAFT_LAUNCHER_PRETEND_VERSION").ok().and_then(|v| version::parse(&v)).or_else(|| version::parse(env!("CARGO_PKG_VERSION")))
+    std::env::var(PRETEND_VAR).ok().and_then(|v| version::parse(&v)).or_else(|| version::parse(env!("CARGO_PKG_VERSION")))
+}
+
+/// How long a just-installed version stays exempt from being offered again.
+const JUST_UPDATED_FOR: i64 = 24 * 3600;
+
+/// Whether `release` is the version this launcher just updated itself to. Offering it again would
+/// loop: update, restart, "update available", … That happens if a release's binary reports a
+/// different version from its tag, or while a pretend version is set.
+pub fn just_updated_to(paths: &Paths, release: &Release) -> bool {
+    let Ok(text) = std::fs::read_to_string(marker(paths)) else { return false };
+    let mut lines = text.lines();
+    let (Some(tag), Some(at)) = (lines.next(), lines.next().and_then(|a| a.parse::<i64>().ok())) else { return false };
+    tag == release.tag && crate::now() - at < JUST_UPDATED_FOR
+}
+
+fn marker(paths: &Paths) -> PathBuf {
+    paths.data.join("self-update.txt")
 }
 
 /// How this copy is installed, if it's one the launcher knows how to replace.
@@ -135,6 +155,9 @@ pub fn update(
     let mut job = Job { http, paths, stop, phase };
     let (file, _) = install::download(release, &asset, &mut job)?;
     phase(JobPhase::Installing);
+    if let Err(e) = crate::paths::write_atomic(&marker(paths), format!("{}\n{}\n", release.tag, crate::now()).as_bytes()) {
+        log::warn!("couldn't record the self-update: {e}");
+    }
     let pid = std::process::id();
     match install {
         #[cfg(target_os = "macos")]
@@ -211,13 +234,20 @@ fn replace_appimage(new: &Path, path: &Path) -> Result<(), String> {
 /// Starts `sh`, which waits for `pid` to exit and then runs `command`. Detached, so it outlives us.
 #[cfg(unix)]
 fn relaunch_after_exit(pid: u32, command: &[&std::ffi::OsStr]) -> Result<(), String> {
+    process::spawn_detached(helper_command(pid, command)).map_err(|e| format!("couldn't schedule the restart ({e})"))
+}
+
+#[cfg(unix)]
+fn helper_command(pid: u32, command: &[&std::ffi::OsStr]) -> std::process::Command {
     let mut cmd = process::command("/bin/sh");
     cmd.arg("-c")
         .arg(r#"pid=$1; shift; i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 600 ]; do sleep 0.1; i=$((i+1)); done; exec "$@""#)
         .arg("sh")
         .arg(pid.to_string())
-        .args(command);
-    process::spawn_detached(cmd).map_err(|e| format!("couldn't schedule the restart ({e})"))
+        .args(command)
+        // The new launcher reports its real version; a pretend one was for this run only.
+        .env_remove(PRETEND_VAR);
+    cmd
 }
 
 /// Starts a hidden PowerShell that waits for `pid` to exit, runs `step`, then starts `exe`.
@@ -225,7 +255,7 @@ fn relaunch_after_exit(pid: u32, command: &[&std::ffi::OsStr]) -> Result<(), Str
 fn windows_helper(pid: u32, step: &str, exe: &Path) -> Result<(), String> {
     let script = format!("Wait-Process -Id {pid} -Timeout 60 -ErrorAction SilentlyContinue; {step}; Start-Process -FilePath {}", ps_quote(exe));
     let mut cmd = process::command("powershell.exe");
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &script]);
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &script]).env_remove(PRETEND_VAR);
     process::spawn_detached(cmd).map_err(|e| format!("couldn't schedule the update ({e})"))
 }
 
@@ -244,6 +274,28 @@ fn ps_quote_arg(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_version_just_installed_is_not_offered_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let r = Release { tag: "v0.2.0".into(), ..Release::default() };
+        assert!(!just_updated_to(&paths, &r));
+        crate::paths::write_atomic(&marker(&paths), format!("v0.2.0\n{}\n", crate::now()).as_bytes()).unwrap();
+        assert!(just_updated_to(&paths, &r));
+        assert!(!just_updated_to(&paths, &Release { tag: "v0.3.0".into(), ..Release::default() }));
+        // A day later the guard lapses.
+        crate::paths::write_atomic(&marker(&paths), format!("v0.2.0\n{}\n", crate::now() - JUST_UPDATED_FOR - 1).as_bytes()).unwrap();
+        assert!(!just_updated_to(&paths, &r));
+    }
+
+    /// The restart helper doesn't pass a pretend version on to the new launcher.
+    #[cfg(unix)]
+    #[test]
+    fn the_restarted_launcher_does_not_inherit_a_pretend_version() {
+        let cmd = helper_command(1, &[std::ffi::OsStr::new("/usr/bin/true")]);
+        assert!(cmd.get_envs().any(|(k, v)| k == PRETEND_VAR && v.is_none()), "the helper must remove {PRETEND_VAR}");
+    }
 
     /// The helper waits for the old launcher to exit before it starts the new one.
     #[cfg(unix)]

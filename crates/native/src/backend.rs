@@ -159,6 +159,7 @@ impl NativeBackend {
             return;
         }
         let shared = self.shared.clone();
+        let paths = self.paths.clone();
         let pre = self.options().prereleases;
         std::thread::spawn(move || {
             shared.emit(Event::CheckStarted);
@@ -183,6 +184,7 @@ impl NativeBackend {
             if let LatestRelease::Found(r) = source.latest(LAUNCHER_REPO, false).latest
                 && let (Some(latest), Some(current)) = (r.version.as_ref(), crate::self_update::current_version())
                 && version::is_newer(latest, &current)
+                && !crate::self_update::just_updated_to(&paths, &r)
             {
                 *shared.launcher_release.lock().unwrap_or_else(PoisonError::into_inner) = Some(r.clone());
                 shared.emit(Event::LauncherUpdate(r));

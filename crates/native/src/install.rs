@@ -474,8 +474,12 @@ pub mod macos {
         let staged = dir.join(format!(".{bundle}.partial"));
         let _ = std::fs::remove_dir_all(&staged);
         let (Some(src_s), Some(staged_s)) = (src.to_str(), staged.to_str()) else { return Err("unusual characters in a path".into()) };
-        // ditto keeps the code signature, extended attributes and symlinks intact.
-        process::capture("ditto", &[src_s, staged_s], Duration::from_secs(600)).ok_or("couldn't copy the app")?;
+        // ditto keeps the code signature and symlinks intact. The disk image's volume adds Finder
+        // metadata (com.apple.FinderInfo) to the files; leave it and the extended attributes
+        // behind, or `codesign --verify --strict` rejects the bundle as carrying "detritus". A
+        // bundle's signature lives in its files, not in extended attributes.
+        process::capture("ditto", &["--norsrc", "--noextattr", "--noacl", src_s, staged_s], Duration::from_secs(600))
+            .ok_or("couldn't copy the app")?;
         if crate::detect::macos::read_bundle(app, &staged).is_none() {
             let _ = std::fs::remove_dir_all(&staged);
             return Err("the copied app is incomplete".into());
