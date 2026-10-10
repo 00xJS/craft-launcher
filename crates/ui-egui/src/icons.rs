@@ -45,7 +45,11 @@ pub fn social(service: &str) -> Option<ImageSource<'static>> {
     })
 }
 
-/// The launcher's icon.
-pub fn launcher() -> ImageSource<'static> {
-    egui::include_image!("../../../assets/app-icon/hicolor/128x128/apps/ai.storyteller.artcraft-launcher.png")
+/// The ArtCraft "A" mark as supplied: black for light backgrounds, the blue mark for dark ones.
+pub fn artcraft_mark(dark_background: bool) -> ImageSource<'static> {
+    if dark_background {
+        egui::include_image!("../../../docs/brand/artcraft-mark.svg")
+    } else {
+        egui::include_image!("../../../docs/brand/artcraft-mark-black.svg")
+    }
 }

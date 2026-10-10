@@ -103,7 +103,8 @@ impl LauncherUi {
     fn settings_dialog(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) -> bool {
         let t = Tokens::get(ui.ctx());
         ui.set_width(460.0);
-        Self::title(ui, Some(crate::icons::launcher()), "Settings", &format!("ArtCraft Launcher {}", env!("CARGO_PKG_VERSION")));
+        // The app icon is the black mark; on a dark dialog show the blue one.
+        Self::title(ui, Some(crate::icons::artcraft_mark(t.dark)), "Settings", &format!("ArtCraft Launcher {}", env!("CARGO_PKG_VERSION")));
         let section = |ui: &mut egui::Ui, s: &str| {
             ui.add_space(10.0);
             ui.label(RichText::new(s.to_uppercase()).size(11.0).family(theme::semibold()).color(t.text_faint));
