@@ -217,11 +217,12 @@ impl LauncherUi {
     /// Returns whether app state changed.
     fn handle(&mut self, ctx: &egui::Context, event: Event) -> bool {
         match event {
-            Event::Latest { app, latest } => {
+            Event::Latest { app, latest, from } => {
                 if let Some(e) = self.entry_mut(&app) {
-                    // A failed check keeps the release we already know about.
+                    // A failed check keeps the release we already know about (and where it came from).
                     if !(matches!(latest, LatestRelease::Failed(_)) && matches!(e.latest, Some(LatestRelease::Found(_)))) {
                         e.latest = Some(latest);
+                        e.origin = Some(from);
                     }
                 }
                 true
@@ -441,6 +442,29 @@ impl LauncherUi {
             ord.then(ia.cmp(ib))
         });
         list.into_iter().map(|(_, e)| e.app.id).collect()
+    }
+
+    /// "ArtCraft API", "GitHub" or "ArtCraft API and GitHub": the services behind the releases on
+    /// screen right now. `None` until something has loaded.
+    pub(crate) fn sources_label(&self) -> Option<String> {
+        use artcraft_launcher_core::protocol::Origin;
+        let mut api = false;
+        let mut github = false;
+        for e in &self.entries {
+            if matches!(e.latest, Some(LatestRelease::Found(_) | LatestRelease::None)) {
+                match e.origin {
+                    Some(Origin::ArtCraftApi) => api = true,
+                    Some(Origin::GitHub) => github = true,
+                    None => {}
+                }
+            }
+        }
+        match (api, github) {
+            (true, true) => Some(format!("{} and {}", Origin::ArtCraftApi.label(), Origin::GitHub.label())),
+            (true, false) => Some(Origin::ArtCraftApi.label().to_string()),
+            (false, true) => Some(Origin::GitHub.label().to_string()),
+            (false, false) => None,
+        }
     }
 
     pub(crate) fn count(&self, filter: Filter) -> usize {

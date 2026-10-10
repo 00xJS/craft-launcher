@@ -14,13 +14,15 @@ pub struct AppEntry {
     /// Detection has answered at least once.
     pub detected: bool,
     pub job: Option<JobPhase>,
+    /// The service `latest` came from.
+    pub origin: Option<artcraft_launcher_core::protocol::Origin>,
     /// A download waiting to be resumed.
     pub paused: Option<PausedDownload>,
 }
 
 impl AppEntry {
     pub fn new(app: &'static CraftApp) -> Self {
-        Self { app, latest: None, installed: None, detected: false, job: None, paused: None }
+        Self { app, latest: None, installed: None, detected: false, job: None, origin: None, paused: None }
     }
 
     pub fn release(&self) -> Option<&Release> {

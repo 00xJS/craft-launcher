@@ -249,8 +249,8 @@ impl LauncherUi {
             if self.checking {
                 widgets::hud(ui, "Checking for updates…", t.faint);
             } else if let Some(at) = self.settings.last_check {
-                let via = self.last_source.map(|s| format!(" · {}", s.label())).unwrap_or_default();
-                widgets::hud(ui, &format!("Checked {}{via}", time::format_ago(at, now)), t.faint);
+                let using = self.sources_label().map(|s| format!(" · using {s}")).unwrap_or_default();
+                widgets::hud(ui, &format!("Checked {}{using}", time::format_ago(at, now)), t.faint);
             } else {
                 widgets::hud(ui, "Not checked yet", t.faint);
             }

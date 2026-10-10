@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, LatestRelease, Source};
+use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, LatestRelease, Origin, Source};
 use artcraft_launcher_core::release::{self, Release};
 use artcraft_launcher_core::{Arch, Os, Platform, SUITE, catalog, version};
 use artcraft_launcher_ui_egui::{Host, LauncherUi, Settings};
@@ -94,7 +94,7 @@ impl WebBackend {
                 let latest = latest.unwrap_or_else(|e| {
                     LatestRelease::Failed(if e.is_some() { "GitHub's hourly limit was reached".into() } else { "couldn't reach GitHub".into() })
                 });
-                events.borrow_mut().push(Event::Latest { app: app.id.to_string(), latest });
+                events.borrow_mut().push(Event::Latest { app: app.id.to_string(), latest, from: Origin::GitHub });
                 ctx.request_repaint();
             }
             if let Ok(LatestRelease::Found(r)) = latest(catalog::LAUNCHER_REPO, false).await

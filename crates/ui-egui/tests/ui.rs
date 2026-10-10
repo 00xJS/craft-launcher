@@ -4,7 +4,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, JobPhase, LatestRelease, PausedDownload, Source};
+use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, JobPhase, LatestRelease, Origin, PausedDownload, Source};
 use artcraft_launcher_core::release::{Asset, Release};
 use artcraft_launcher_core::status::InstallSource;
 use artcraft_launcher_core::{Arch, Installed, Os, Platform, SUITE, version};
@@ -79,9 +79,13 @@ fn events() -> Vec<Event> {
         ("cadcraft", "0.3.0"),
     ];
     for (i, (id, v)) in versions.iter().enumerate() {
-        ev.push(Event::Latest { app: (*id).into(), latest: LatestRelease::Found(release(id, v, NOW - 86_400 - i as i64 * 600)) });
+        ev.push(Event::Latest {
+            app: (*id).into(),
+            latest: LatestRelease::Found(release(id, v, NOW - 86_400 - i as i64 * 600)),
+            from: Origin::ArtCraftApi,
+        });
     }
-    ev.push(Event::Latest { app: "soundcraft".into(), latest: LatestRelease::None });
+    ev.push(Event::Latest { app: "soundcraft".into(), latest: LatestRelease::None, from: Origin::ArtCraftApi });
     let installed = [("photocraft", "0.4.1"), ("lightcraft", "0.4.0"), ("wordcraft", "0.3.0"), ("effectcraft", "0.5.0")];
     for app in &SUITE {
         let inst = installed.iter().find(|(id, _)| *id == app.id).map(|(_, v)| Installed {
@@ -515,6 +519,38 @@ fn automatic_checks_run_every_five_minutes() {
     // Older saved choices still load, and mean "automatically" now.
     assert_eq!(CheckEvery::Day.seconds(), Some(300));
     assert_eq!(CheckEvery::Never.seconds(), None);
+}
+
+#[test]
+fn the_footer_names_the_services_behind_what_is_on_screen() {
+    let footer = |extra: Vec<Event>| {
+        let mut evs = events();
+        evs.extend(extra);
+        let sent = Rc::new(RefCell::new(Vec::new()));
+        let mut backend = Some(Fake { events: evs, sent, manage: true, clock: Rc::new(Cell::new(NOW)) });
+        let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+            move |ui, state: &mut Option<LauncherUi>| {
+                if state.is_none()
+                    && let Some(b) = backend.take()
+                {
+                    *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+                }
+                if let Some(l) = state.as_mut() {
+                    l.logic(&ui.ctx().clone(), &mut NoHost);
+                    l.ui(ui, &mut NoHost);
+                }
+            },
+            None,
+        );
+        h.run_steps(6);
+        let label =
+            h.get_by_label_contains("Checked ").accesskit_node().label().or_else(|| h.get_by_label_contains("Checked ").accesskit_node().value());
+        label.unwrap_or_default()
+    };
+    assert_eq!(footer(Vec::new()), "Checked 3 min ago · using ArtCraft API");
+    let from_github =
+        vec![Event::Latest { app: "wordcraft".into(), latest: LatestRelease::Found(release("wordcraft", "0.3.1", NOW)), from: Origin::GitHub }];
+    assert_eq!(footer(from_github), "Checked 3 min ago · using ArtCraft API and GitHub");
 }
 
 #[test]

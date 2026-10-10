@@ -97,6 +97,24 @@ pub const PAUSED: &str = "paused";
 /// The `JobFinished` error a cancelled job ends with (not a failure).
 pub const CANCELLED: &str = "cancelled";
 
+/// Which service an app's release information came from (the footer names them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Origin {
+    /// ArtCraft's release feed (storyteller-web), which polls GitHub for everyone.
+    ArtCraftApi,
+    /// GitHub directly: the fallback.
+    GitHub,
+}
+
+impl Origin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ArtCraftApi => "ArtCraft API",
+            Self::GitHub => "GitHub",
+        }
+    }
+}
+
 /// Where release information came from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Source {
@@ -127,6 +145,8 @@ pub enum Event {
     Latest {
         app: String,
         latest: LatestRelease,
+        /// The service this answer came from.
+        from: Origin,
     },
     /// The latest ArtCraft Launcher release, when it's newer than this one.
     LauncherUpdate(Release),
