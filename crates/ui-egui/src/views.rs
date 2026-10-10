@@ -212,32 +212,27 @@ impl LauncherUi {
         let shown: Vec<artcraft_launcher_core::feed::Notice> =
             self.announcements.iter().filter(|n| !self.settings.dismissed_notices.contains(&n.id)).take(3).cloned().collect();
         for notice in shown {
-            egui::Frame::new()
-                .fill(t.card)
-                .stroke(Stroke::new(1.0, t.border))
-                .corner_radius(theme::RADIUS)
-                .inner_margin(egui::Margin::symmetric(14, 10))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                            if widgets::glyph_button(ui, widgets::Glyph::Close, "Dismiss").clicked() {
-                                self.settings.dismissed_notices.insert(notice.id.clone());
+            egui::Frame::new().fill(t.sunken).stroke(t.hairline()).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        if widgets::glyph_button(ui, widgets::Glyph::Close, "Dismiss").clicked() {
+                            self.settings.dismissed_notices.insert(notice.id.clone());
+                        }
+                        if let Some(link) = &notice.link {
+                            widgets::hud_link(ui, "Learn more", link);
+                        }
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            if !notice.title.is_empty() {
+                                ui.label(RichText::new(&notice.title).family(theme::semibold()).color(t.ink_strong));
                             }
-                            if let Some(link) = &notice.link {
-                                widgets::small_link(ui, "Learn more", link);
+                            if !notice.body.is_empty() {
+                                ui.add(egui::Label::new(RichText::new(&notice.body).color(t.muted)).wrap());
                             }
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                if !notice.title.is_empty() {
-                                    ui.label(RichText::new(&notice.title).family(theme::semibold()).color(t.text));
-                                }
-                                if !notice.body.is_empty() {
-                                    ui.add(egui::Label::new(RichText::new(&notice.body).color(t.text_muted)).wrap());
-                                }
-                            });
                         });
                     });
                 });
+            });
             ui.add_space(8.0);
         }
     }

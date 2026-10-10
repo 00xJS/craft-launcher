@@ -33,22 +33,21 @@ impl LauncherUi {
     fn alert_popup(&mut self, ctx: &egui::Context) {
         let Some(alert) = self.alerts.iter().find(|a| !self.settings.dismissed_notices.contains(&a.id)).cloned() else { return };
         let t = Tokens::get(ctx);
-        let modal = egui::Modal::new(egui::Id::new("feed_alert")).frame(
-            egui::Frame::new().fill(t.surface).stroke(egui::Stroke::new(1.0, t.border_strong)).corner_radius(theme::RADIUS + 4).inner_margin(22),
-        );
+        let modal = egui::Modal::new(egui::Id::new("feed_alert"))
+            .frame(egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(theme::shadow(&t)).inner_margin(24));
         let mut ok = false;
         modal.show(ctx, |ui| {
             ui.set_width(440.0f32.min(ctx.content_rect().width() - 80.0));
-            ui.label(RichText::new(&alert.title).size(18.0).family(theme::semibold()).color(t.text));
+            ui.label(RichText::new(&alert.title).size(18.0).family(theme::semibold()).color(t.ink_strong));
             ui.add_space(6.0);
             egui::ScrollArea::vertical().max_height(ctx.content_rect().height() * 0.5).show(ui, |ui| {
-                ui.add(egui::Label::new(RichText::new(&alert.body).color(t.text_muted)).wrap());
+                ui.add(egui::Label::new(RichText::new(&alert.body).color(t.muted)).wrap());
             });
             ui.add_space(14.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ok = widgets::primary(ui, "OK", t.accent, 90.0).clicked();
+                ok = widgets::button(ui, "OK", Kind::Primary, 90.0).clicked();
                 if let Some(link) = &alert.link
-                    && widgets::secondary(ui, "Open link", 0.0).on_hover_text(link.as_str()).clicked()
+                    && widgets::button(ui, "Open link", Kind::Secondary, 110.0).on_hover_text(link.as_str()).clicked()
                 {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(link.clone()));
                 }
