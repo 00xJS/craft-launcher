@@ -41,6 +41,8 @@ pub enum Command {
     Cancel {
         app: String,
     },
+    /// Download the newer ArtCraft Launcher, put it in place and restart into it.
+    UpdateLauncher,
     /// Change how the backend behaves.
     Configure(BackendOptions),
 }
@@ -125,6 +127,8 @@ pub enum Event {
     },
     /// The latest ArtCraft Launcher release, when it's newer than this one.
     LauncherUpdate(Release),
+    /// The new launcher is in place (or will be, once this one exits): quit now so it can start.
+    LauncherRestarting,
     Detected {
         app: String,
         installed: Option<Installed>,
@@ -161,6 +165,9 @@ pub struct Capabilities {
     pub manage_apps: bool,
     /// What "show in file manager" is called here (`Show in Finder`).
     pub reveal_label: &'static str,
+    /// The launcher can update itself in place and restart (an installed build, not a dev build or
+    /// a Flatpak). Without it the UI offers the download instead.
+    pub self_update: bool,
 }
 
 /// The UI's view of a backend.

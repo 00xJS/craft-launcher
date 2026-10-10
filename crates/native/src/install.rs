@@ -130,7 +130,7 @@ pub fn available_kinds() -> Vec<PackageKind> {
 /// Fetches `asset` into the download folder, checked against its published SHA-256: GitHub's
 /// per-file digest, else the release's `SHA256SUMS.txt`. A release with neither still installs,
 /// checked by size only, and says so.
-fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<(PathBuf, Verified), String> {
+pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<(PathBuf, Verified), String> {
     if !release::valid_file_name(&asset.name) {
         return Err("the release has an unexpected file name".into());
     }
@@ -311,7 +311,7 @@ fn run_as_root(args: &[&std::ffi::OsStr]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-mod linux {
+pub(crate) mod linux {
     use std::ffi::OsStr;
     use std::os::unix::fs::PermissionsExt;
 

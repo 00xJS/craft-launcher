@@ -93,12 +93,34 @@ impl LauncherUi {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("ArtCraft Launcher {} is available.", r.version_label())).family(theme::medium()));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(phase) = self.launcher_job {
+                                let (fraction, caption) = match phase {
+                                    JobPhase::Downloading { done, total } if total > 0 => (
+                                        Some(done as f32 / total as f32),
+                                        format!("Downloading {} of {}", widgets::human_bytes(done), widgets::human_bytes(total)),
+                                    ),
+                                    JobPhase::Downloading { .. } | JobPhase::Reconnecting { .. } => (None, "Downloading…".to_string()),
+                                    JobPhase::Verifying => (None, "Verifying…".to_string()),
+                                    JobPhase::Installing | JobPhase::Removing => (None, "Installing, then restarting…".to_string()),
+                                };
+                                widgets::progress(ui, fraction, &caption, t.accent, 220.0);
+                                return;
+                            }
                             if widgets::icon_button(ui, "×", "Dismiss").clicked() {
                                 self.launcher_update = None;
                             }
-                            let url = self.platform.and_then(|p| launcher_download(&r, p)).unwrap_or_else(|| r.html_url.clone());
-                            if widgets::primary(ui, "Download", t.accent, 0.0).clicked() {
-                                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                            if self.caps.self_update {
+                                if widgets::primary(ui, "Update and restart", t.accent, 0.0)
+                                    .on_hover_text("Downloads the new version, replaces this one and opens it again")
+                                    .clicked()
+                                {
+                                    self.send(Command::UpdateLauncher);
+                                }
+                            } else {
+                                let url = self.platform.and_then(|p| launcher_download(&r, p)).unwrap_or_else(|| r.html_url.clone());
+                                if widgets::primary(ui, "Download", t.accent, 0.0).clicked() {
+                                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                                }
                             }
                             if ui.link("What's new").clicked() {
                                 ui.ctx().open_url(egui::OpenUrl::new_tab(r.html_url.clone()));

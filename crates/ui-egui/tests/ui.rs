@@ -30,7 +30,7 @@ impl Backend for Fake {
         std::mem::take(&mut self.events)
     }
     fn capabilities(&self) -> Capabilities {
-        Capabilities { manage_apps: self.manage, reveal_label: "Show in Finder" }
+        Capabilities { manage_apps: self.manage, reveal_label: "Show in Finder", self_update: self.manage }
     }
     fn platform(&self) -> Option<Platform> {
         Some(Platform { os: Os::MacOs, arch: Arch::Arm64 })
@@ -373,6 +373,77 @@ fn looks_again_at_installed_apps_every_few_minutes_not_every_frame() {
     clock.set(NOW + 5 * 60);
     h.run_steps(10);
     assert_eq!(detects(&sent), 1, "once at five minutes, not once per frame");
+}
+
+#[test]
+fn the_launcher_updates_itself_and_quits_to_restart() {
+    struct QuitHost(Rc<Cell<bool>>);
+    impl Host for QuitHost {
+        fn quit(&mut self) {
+            self.0.set(true);
+        }
+    }
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let mut events = events();
+    events.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
+    let shared_events = Rc::new(RefCell::new(Vec::new()));
+    struct Scripted {
+        inner: Fake,
+        later: Rc<RefCell<Vec<Event>>>,
+    }
+    impl Backend for Scripted {
+        fn send(&mut self, c: Command) {
+            self.inner.send(c);
+        }
+        fn poll(&mut self) -> Vec<Event> {
+            let mut out = self.inner.poll();
+            out.extend(self.later.borrow_mut().drain(..));
+            out
+        }
+        fn capabilities(&self) -> Capabilities {
+            self.inner.capabilities()
+        }
+        fn platform(&self) -> Option<Platform> {
+            self.inner.platform()
+        }
+        fn now(&self) -> i64 {
+            self.inner.now()
+        }
+    }
+    let quit = Rc::new(Cell::new(false));
+    let mut host = QuitHost(quit.clone());
+    let mut backend =
+        Some(Scripted { inner: Fake { events, sent: sent.clone(), manage: true, clock: Rc::new(Cell::new(NOW)) }, later: shared_events.clone() });
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut host);
+                l.ui(ui, &mut host);
+            }
+        },
+        None,
+    );
+    h.run_steps(6);
+    h.get_by_label_contains("ArtCraft Launcher 0.2.0 is available");
+    h.get_by_label("Update and restart").click();
+    h.run_steps(2);
+    assert!(sent.borrow().contains(&Command::UpdateLauncher));
+    // Downloading: the banner shows progress instead of the button.
+    shared_events
+        .borrow_mut()
+        .push(Event::Progress { app: "artcraft-launcher".into(), phase: JobPhase::Downloading { done: 5 << 20, total: 10 << 20 } });
+    h.run_steps(3);
+    assert!(h.query_by_label("Update and restart").is_none());
+    assert!(!quit.get());
+    // In place: the launcher quits so the helper can start the new one.
+    shared_events.borrow_mut().push(Event::LauncherRestarting);
+    h.run_steps(3);
+    assert!(quit.get());
 }
 
 #[test]

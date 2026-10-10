@@ -95,6 +95,10 @@ installed by hand (and the launcher finds apps you installed yourself):
 | Linux | `/usr/bin`, `/usr/share/applications` | The release `.deb` (apt) or `.rpm` (dnf, zypper), with your system's password prompt. Without those, a Flatpak, or an AppImage in `~/Applications` |
 | FreeBSD | `/usr/local` | The release tree, with a password prompt (polkit); `~/.local` when polkit isn't installed |
 
+ArtCraft Launcher keeps itself current too: when a new version is out, **Update and restart**
+downloads it, verifies it, puts it where this copy is installed (the `.app`, the Windows Installer
+package or portable folder, the AppImage, or the `.deb`/`.rpm`) and reopens it.
+
 Updates use the same format an app was installed with. Every download is checked against the
 release's published SHA-256 before it is installed, and a running app is never replaced.
 

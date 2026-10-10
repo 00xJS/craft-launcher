@@ -38,6 +38,8 @@ struct Shared {
     /// A detection pass is running; another request waits for the next one.
     detecting: AtomicBool,
     last_check: Mutex<Option<i64>>,
+    /// The newer ArtCraft Launcher release, once a check has found one.
+    launcher_release: Mutex<Option<Release>>,
 }
 
 impl Shared {
@@ -53,6 +55,8 @@ pub struct NativeBackend {
     http: Option<Http>,
     source: Option<Arc<dyn ReleaseSource>>,
     platform: Option<Platform>,
+    /// How this launcher is installed, when it can replace itself.
+    self_install: Option<crate::self_update::Install>,
 }
 
 impl NativeBackend {
@@ -82,9 +86,10 @@ impl NativeBackend {
             options: Mutex::new(BackendOptions::default()),
             checking: AtomicBool::new(false),
             detecting: AtomicBool::new(false),
+            launcher_release: Mutex::new(None),
             last_check: Mutex::new(None),
         });
-        let backend = Self { shared, paths, http, source, platform: native_platform() };
+        let backend = Self { shared, paths, http, source, platform: native_platform(), self_install: crate::self_update::current() };
         backend.replay_cache();
         backend.detect_all();
         backend
@@ -176,9 +181,10 @@ impl NativeBackend {
             });
             // Is there a newer ArtCraft Launcher?
             if let LatestRelease::Found(r) = source.latest(LAUNCHER_REPO, false).latest
-                && let (Some(latest), Some(current)) = (r.version.as_ref(), version::parse(env!("CARGO_PKG_VERSION")))
+                && let (Some(latest), Some(current)) = (r.version.as_ref(), crate::self_update::current_version())
                 && version::is_newer(latest, &current)
             {
+                *shared.launcher_release.lock().unwrap_or_else(PoisonError::into_inner) = Some(r.clone());
                 shared.emit(Event::LauncherUpdate(r));
             }
             source.save();
@@ -251,6 +257,48 @@ impl NativeBackend {
             shared.emit(Event::Detected { app: app.id.to_string(), installed: found });
             shared.jobs.lock().unwrap_or_else(PoisonError::into_inner).remove(app.id);
             shared.emit(Event::JobFinished { app: app.id.to_string(), result });
+        });
+    }
+
+    /// Downloads the newer launcher, puts it in place and asks the UI to quit so it can start.
+    fn update_launcher(&self) {
+        let id = LAUNCHER_ID.to_string();
+        let (Some(install), Some(platform)) = (self.self_install.clone(), self.platform) else {
+            self.shared.emit(Event::JobFinished {
+                app: id,
+                result: Err("this copy of ArtCraft Launcher can't update itself; download the new version instead".into()),
+            });
+            return;
+        };
+        let Some(release) = self.shared.launcher_release.lock().unwrap_or_else(PoisonError::into_inner).clone() else { return };
+        let stop = Arc::new(Stop::default());
+        {
+            let mut jobs = self.shared.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+            if jobs.contains_key(&id) {
+                return;
+            }
+            jobs.insert(id.clone(), stop.clone());
+        }
+        let (shared, paths, http) = (self.shared.clone(), self.paths.clone(), self.http.clone());
+        std::thread::spawn(move || {
+            let mut last_emit = Instant::now() - Duration::from_secs(1);
+            let mut phase = |p: JobPhase| {
+                if matches!(p, JobPhase::Downloading { done, total } if done != total && done != 0) && last_emit.elapsed() < Duration::from_millis(50)
+                {
+                    return;
+                }
+                last_emit = Instant::now();
+                shared.emit(Event::Progress { app: LAUNCHER_ID.to_string(), phase: p });
+            };
+            let result = match http.as_ref() {
+                Some(http) => crate::self_update::update(&install, &release, platform, http, &paths, &stop, &mut phase),
+                None => Err("secure connections aren't available on this system".into()),
+            };
+            shared.jobs.lock().unwrap_or_else(PoisonError::into_inner).remove(LAUNCHER_ID);
+            match result {
+                Ok(()) => shared.emit(Event::LauncherRestarting),
+                Err(e) => shared.emit(Event::JobFinished { app: LAUNCHER_ID.to_string(), result: Err(e) }),
+            }
         });
     }
 
@@ -407,6 +455,7 @@ impl Backend for NativeBackend {
                     }
                 }
             }
+            Command::UpdateLauncher => self.update_launcher(),
             Command::Configure(options) => {
                 let changed_pre = {
                     let mut o = self.shared.options.lock().unwrap_or_else(PoisonError::into_inner);
@@ -431,7 +480,7 @@ impl Backend for NativeBackend {
             Some(Os::Windows) => "Show in Explorer",
             _ => "Show in Files",
         };
-        Capabilities { manage_apps: true, reveal_label }
+        Capabilities { manage_apps: true, reveal_label, self_update: self.self_install.is_some() }
     }
 
     fn platform(&self) -> Option<Platform> {

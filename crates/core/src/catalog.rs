@@ -170,6 +170,19 @@ pub const SOCIAL: [(&str, &str); 4] = [
 /// The ArtCraft community on Discord.
 pub const DISCORD_URL: &str = "https://discord.gg/artcraft";
 
+/// ArtCraft Launcher itself, described like a Craft App so it can update itself with the same
+/// machinery (asset names `artcraft-launcher-<ver>-…`, bundle id `ai.storyteller.artcraft-launcher`,
+/// `ArtCraft Launcher.app`). Not part of [`SUITE`].
+pub const LAUNCHER: CraftApp = app(
+    "artcraft-launcher",
+    "ArtCraft Launcher",
+    "Installs and updates the Craft App Suite",
+    "",
+    AppGroup::New,
+    [0x0b, 0x0b, 0x0c],
+    "storytold/craft-launcher",
+);
+
 /// The launcher's own repo, checked so it can say when a newer launcher is out.
 pub const LAUNCHER_REPO: &str = "storytold/craft-launcher";
 /// The launcher's own asset stem.

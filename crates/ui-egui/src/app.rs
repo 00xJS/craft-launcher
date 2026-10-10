@@ -53,6 +53,10 @@ pub struct LauncherUi {
     pub(crate) last_source: Option<Source>,
     pub(crate) rate_limited_until: Option<i64>,
     pub(crate) launcher_update: Option<Release>,
+    /// The launcher's own update, while it downloads and installs.
+    pub(crate) launcher_job: Option<artcraft_launcher_core::protocol::JobPhase>,
+    /// The new launcher is in place: quit so it can start.
+    restart_requested: bool,
     pub(crate) search: String,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) dialog: Option<Dialog>,
@@ -90,6 +94,8 @@ impl LauncherUi {
             last_source: None,
             rate_limited_until: None,
             launcher_update: None,
+            launcher_job: None,
+            restart_requested: false,
             search: String::new(),
             toasts: Vec::new(),
             dialog: None,
@@ -170,6 +176,11 @@ impl LauncherUi {
         if changed {
             self.announce_updates(host);
         }
+        if self.restart_requested {
+            // The helper is waiting for this process to exit before it starts the new launcher.
+            self.restart_requested = false;
+            host.quit();
+        }
         // Wake up now and then for scheduled checks, even in the tray.
         ctx.request_repaint_after(Duration::from_secs(60));
     }
@@ -194,9 +205,15 @@ impl LauncherUi {
                 true
             }
             Event::Progress { app, phase } => {
-                if let Some(e) = self.entry_mut(&app) {
+                if app == artcraft_launcher_core::catalog::LAUNCHER_ID {
+                    self.launcher_job = Some(phase);
+                } else if let Some(e) = self.entry_mut(&app) {
                     e.job = Some(phase);
                 }
+                false
+            }
+            Event::LauncherRestarting => {
+                self.restart_requested = true;
                 false
             }
             Event::Paused { app, download } => {
@@ -206,6 +223,9 @@ impl LauncherUi {
                 false
             }
             Event::JobFinished { app, result } => {
+                if app == artcraft_launcher_core::catalog::LAUNCHER_ID {
+                    self.launcher_job = None;
+                }
                 if let Some(e) = self.entry_mut(&app) {
                     e.job = None;
                 }
