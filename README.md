@@ -46,6 +46,10 @@
   <a href="https://discord.gg/artcraft">Discord</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/artcraft-launcher.png" alt="ArtCraft Launcher on macOS: the Craft App Suite in the table view, with each app's status, installed and latest version, release date, and Install or Open buttons" width="900">
+</p>
+
 ## What it does
 
 The Craft apps each ship their own builds for every platform. ArtCraft Launcher saves you from
@@ -231,8 +235,6 @@ lot from them. Thank you to their authors:
 | [Craft Apps Manager](https://github.com/CryptoKey98/craft-apps-manager) | [@CryptoKey98](https://github.com/CryptoKey98) | Scheduled background update checks and per-app launch options |
 | [ArtCraft Hub Launcher](https://github.com/tinyplayerss/artcraft-hub-launcher) | [@tinyplayerss](https://github.com/tinyplayerss) | A friendly, one-window hub for the whole suite |
 | [CraftHub](https://github.com/MegaTheLEGEND/CraftHub) | [@MegaTheLEGEND](https://github.com/MegaTheLEGEND) | Serving the apps' web builds from a self-hosted launcher |
-
-ArtCraft Launcher is a separate implementation and contains none of their code.
 
 ## License and credits
 
