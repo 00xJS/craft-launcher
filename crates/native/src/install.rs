@@ -96,6 +96,8 @@ pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, prefe
             InstallSource::Flatpak => Some(PackageKind::Flatpak),
             InstallSource::AppImage => Some(PackageKind::AppImage),
             InstallSource::Binary => Some(PackageKind::TarGz),
+            // Updated by the user's AUR helper; see `managed_elsewhere`.
+            InstallSource::Pacman => None,
         };
         if let Some(k) = kind.filter(|k| available.contains(k)) {
             return vec![k];
@@ -159,12 +161,34 @@ fn published_checksum(release: &Release, asset: &Asset, http: &Http) -> Result<O
     Ok(release::parse_sha256sums(&text).into_iter().find(|(_, n)| *n == asset.name).map(|(h, _)| h))
 }
 
+/// When `installed` is owned by a package manager the launcher doesn't drive (the AUR), what to
+/// tell the user instead of installing a second copy.
+pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool) -> Option<String> {
+    match installed.source {
+        InstallSource::Pacman => {
+            let pkg = installed.package.clone().unwrap_or_else(|| app.id.to_string());
+            Some(if uninstall {
+                format!("{} was installed from the AUR ({pkg}). Remove it with: sudo pacman -R {pkg}", app.name)
+            } else {
+                let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
+                let cmd = match helper {
+                    Some(h) => format!("{h} -S {pkg}"),
+                    None => format!("your AUR helper (for example: yay -S {pkg})"),
+                };
+                format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name)
+            })
+        }
+        InstallSource::Binary => Some(format!("{} was installed outside the launcher. Update or remove it the way it was installed.", app.name)),
+        _ => None,
+    }
+}
+
 /// Removes an installed copy.
 pub fn uninstall(app: &CraftApp, installed: &Installed, record: Option<&Record>) -> Result<(), String> {
     let _ = record;
     let path = PathBuf::from(&installed.location);
-    if installed.source == InstallSource::Binary {
-        return Err(format!("{} was installed outside the launcher. Remove it the way it was installed.", app.name));
+    if let Some(msg) = managed_elsewhere(app, installed, true) {
+        return Err(msg);
     }
     if matches!(installed.source, InstallSource::MacApp | InstallSource::Msi | InstallSource::AppImage | InstallSource::Launcher)
         && process::is_running(&path)
@@ -727,7 +751,7 @@ mod tests {
 
     #[test]
     fn updates_keep_the_installed_format() {
-        let inst = |source| Installed { version: None, source, location: String::new() };
+        let inst = |source| Installed { version: None, source, location: String::new(), package: None };
         let available = available_kinds();
         if let Some(first) = available.first() {
             assert_eq!(choose_kinds(None, None, &[]).first(), Some(first));

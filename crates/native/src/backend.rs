@@ -35,6 +35,8 @@ struct Shared {
     manifest: Mutex<Manifest>,
     options: Mutex<BackendOptions>,
     checking: AtomicBool,
+    /// A detection pass is running; another request waits for the next one.
+    detecting: AtomicBool,
     last_check: Mutex<Option<i64>>,
 }
 
@@ -79,6 +81,7 @@ impl NativeBackend {
             manifest: Mutex::new(Manifest::load(&paths.manifest())),
             options: Mutex::new(BackendOptions::default()),
             checking: AtomicBool::new(false),
+            detecting: AtomicBool::new(false),
             last_check: Mutex::new(None),
         });
         let backend = Self { shared, paths, http, source, platform: native_platform() };
@@ -106,6 +109,9 @@ impl NativeBackend {
     }
 
     fn detect_all(&self) {
+        if self.shared.detecting.swap(true, Ordering::SeqCst) {
+            return;
+        }
         let shared = self.shared.clone();
         let paths = self.paths.clone();
         let platform = self.platform;
@@ -130,6 +136,7 @@ impl NativeBackend {
             for app in &SUITE {
                 report_partial(app, &shared, &paths, platform, &options);
             }
+            shared.detecting.store(false, Ordering::SeqCst);
         });
     }
 
@@ -264,6 +271,9 @@ fn run_install(
     record: Option<&crate::manifest::Record>,
     stop: &Stop,
 ) -> Result<String, String> {
+    if let Some(msg) = existing.and_then(|e| install::managed_elsewhere(app, e, false)) {
+        return Err(msg);
+    }
     let http = http.ok_or("secure connections aren't available on this system")?;
     let platform = platform.ok_or("this system isn't supported")?;
     let release = shared

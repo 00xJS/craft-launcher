@@ -32,6 +32,35 @@ pub fn parse(text: &str) -> Option<Version> {
     None
 }
 
+/// Reads a version as a system package manager reports it, dropping what the packaging adds:
+/// an epoch (`1:`), the package revision (`-1`, `-2.fc40`), Debian's `~` pre-release spelling, and
+/// a VCS snapshot suffix (`0.3.0.r47.g47f9306` from an AUR `-git` package, read as `0.3.0`).
+pub fn parse_package(text: &str) -> Option<Version> {
+    let t = text.trim();
+    // Epoch.
+    let t = match t.split_once(':') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => rest,
+        _ => t,
+    };
+    // Package revision: whatever follows the last '-' when the part before it is a version.
+    let t = match t.rsplit_once('-') {
+        Some((upstream, rev)) if !rev.is_empty() && rev.starts_with(|c: char| c.is_ascii_digit()) && upstream.contains('.') => upstream,
+        _ => t,
+    };
+    let t = t.replace('~', "-");
+    if let Some(v) = parse(&t) {
+        return Some(v);
+    }
+    // VCS snapshots and other suffixes: the leading X.Y.Z.
+    let core: String = t.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let parts: Vec<&str> = core.split('.').filter(|p| !p.is_empty()).take(3).collect();
+    match parts.as_slice() {
+        [a, b, c] => Version::parse(&format!("{a}.{b}.{c}")).ok(),
+        [a, b] => Version::parse(&format!("{a}.{b}.0")).ok(),
+        _ => None,
+    }
+}
+
 /// A version that's a plain `X.Y.Z` with no pre-release suffix.
 pub fn is_stable(v: &Version) -> bool {
     v.pre.is_empty()
@@ -78,6 +107,25 @@ mod tests {
         for bad in ["", "v", "latest", "1", "1.x.0", "0.5.", &"9".repeat(80)] {
             assert_eq!(parse(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn reads_package_manager_versions() {
+        let p = |s: &str| parse_package(s).map(|v| v.to_string());
+        // dpkg and pacman add a package revision; it is not a pre-release.
+        assert_eq!(p("0.5.0-1").as_deref(), Some("0.5.0"));
+        assert_eq!(p("0.5.0-12").as_deref(), Some("0.5.0"));
+        assert_eq!(p("1:0.5.0-1").as_deref(), Some("0.5.0"));
+        assert_eq!(p("0.2.0~rc.1-1").as_deref(), Some("0.2.0-rc.1"));
+        assert_eq!(p("0.5.0-2.fc40").as_deref(), Some("0.5.0"));
+        // AUR -git packages: the release the snapshot follows.
+        assert_eq!(p("0.3.0.r47.g47f9306-1").as_deref(), Some("0.3.0"));
+        // Plain versions (rpm %{VERSION}, Flatpak) pass through.
+        assert_eq!(p("0.4.0").as_deref(), Some("0.4.0"));
+        assert_eq!(p("garbage"), None);
+        // The bug this guards: 0.5.0-1 used to read as a pre-release, so an installed .deb of the
+        // latest release always looked out of date.
+        assert!(!is_update(&v("0.5.0"), &parse_package("0.5.0-1").unwrap()));
     }
 
     #[test]

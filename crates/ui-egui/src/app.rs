@@ -62,7 +62,17 @@ pub struct LauncherUi {
     /// weights before then would abort.
     fonts_ready: bool,
     sent_options: Option<BackendOptions>,
+    /// Unix seconds of the last look at what's installed (startup counts).
+    last_detect: i64,
+    /// Whether the window had focus last frame, to re-check when the user comes back to it.
+    was_focused: bool,
 }
+
+/// How often to look again at what's installed, to notice apps installed or removed outside
+/// the launcher. A detection pass lists packages and reads a few files: cheap, but not free.
+const RESCAN_EVERY: i64 = 5 * 60;
+/// Coming back to the window re-checks, but not more often than this.
+const RESCAN_ON_FOCUS_AFTER: i64 = 30;
 
 impl LauncherUi {
     pub fn new(ctx: &egui::Context, backend: Box<dyn Backend>, settings: Settings) -> Self {
@@ -87,6 +97,8 @@ impl LauncherUi {
             applied_theme: None,
             fonts_ready: false,
             sent_options: None,
+            last_detect: 0,
+            was_focused: true,
         }
     }
 
@@ -99,6 +111,7 @@ impl LauncherUi {
     pub fn check_now(&mut self) {
         self.backend.send(Command::CheckForUpdates { force: true });
         self.backend.send(Command::Detect);
+        self.last_detect = self.backend.now();
     }
 
     pub(crate) fn send(&mut self, command: Command) {
@@ -133,6 +146,17 @@ impl LauncherUi {
             self.backend.send(Command::CheckForUpdates { force: false });
         }
         let now = self.backend.now();
+        if self.last_detect == 0 {
+            // The backend looks once at startup by itself.
+            self.last_detect = now;
+        }
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
+        let came_back = focused && !self.was_focused && now - self.last_detect >= RESCAN_ON_FOCUS_AFTER;
+        self.was_focused = focused;
+        if came_back || now - self.last_detect >= RESCAN_EVERY {
+            self.last_detect = now;
+            self.backend.send(Command::Detect);
+        }
         if let Some(every) = self.settings.check_every.seconds()
             && !self.checking
             && self.settings.last_check.is_none_or(|t| now - t >= every)

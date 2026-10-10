@@ -17,6 +17,8 @@ pub enum InstallSource {
     Deb,
     /// An RPM package.
     Rpm,
+    /// An Arch Linux package (from the AUR: `<app>`, `<app>-bin` or `<app>-git`).
+    Pacman,
     /// A Flatpak.
     Flatpak,
     /// An AppImage file found on disk.
@@ -33,6 +35,7 @@ impl InstallSource {
             Self::Msi => "Windows Installer",
             Self::Deb => "Debian package",
             Self::Rpm => "RPM package",
+            Self::Pacman => "Arch package (AUR)",
             Self::Flatpak => "Flatpak",
             Self::AppImage => "AppImage",
             Self::Binary => "System binary",
@@ -52,8 +55,11 @@ pub struct Installed {
     /// `None` when the copy is there but its version couldn't be read.
     pub version: Option<Version>,
     pub source: InstallSource,
-    /// Where it lives: the `.app`, the exe, the AppImage, or the package name.
+    /// Where it lives: the `.app`, the exe, the AppImage, or the binary of a package.
     pub location: String,
+    /// The package that installed it, for package-manager installs (`photocraft-bin`).
+    #[serde(default)]
+    pub package: Option<String>,
 }
 
 /// The status shown on an app's card or row.
@@ -117,7 +123,7 @@ mod tests {
     use super::*;
 
     fn inst(v: &str) -> Installed {
-        Installed { version: version::parse(v), source: InstallSource::Launcher, location: String::new() }
+        Installed { version: version::parse(v), source: InstallSource::Launcher, location: String::new(), package: None }
     }
 
     #[test]

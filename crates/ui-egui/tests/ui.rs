@@ -1,7 +1,7 @@
 //! Drives the launcher UI against a fake backend: what's shown for each status, and which
 //! commands the buttons send. `ARTCRAFT_LAUNCHER_SNAPSHOTS=<dir>` also saves screenshots.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use artcraft_launcher_core::protocol::{Backend, Capabilities, Command, Event, JobPhase, LatestRelease, PausedDownload, Source};
@@ -19,6 +19,7 @@ struct Fake {
     events: Vec<Event>,
     sent: Rc<RefCell<Vec<Command>>>,
     manage: bool,
+    clock: Rc<Cell<i64>>,
 }
 
 impl Backend for Fake {
@@ -35,7 +36,7 @@ impl Backend for Fake {
         Some(Platform { os: Os::MacOs, arch: Arch::Arm64 })
     }
     fn now(&self) -> i64 {
-        NOW
+        self.clock.get()
     }
 }
 
@@ -87,6 +88,7 @@ fn events() -> Vec<Event> {
             version: version::parse(v),
             source: InstallSource::MacApp,
             location: format!("/Applications/{}.app", app.name),
+            package: None,
         });
         ev.push(Event::Detected { app: app.id.into(), installed: inst });
     }
@@ -100,7 +102,7 @@ fn events() -> Vec<Event> {
 fn harness(view: ViewMode, theme: egui::Theme, manage: bool) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
     let sent = Rc::new(RefCell::new(Vec::new()));
     let sent2 = sent.clone();
-    let mut backend = Some(Fake { events: events(), sent: sent2, manage });
+    let mut backend = Some(Fake { events: events(), sent: sent2, manage, clock: Rc::new(Cell::new(NOW)) });
     let settings = Settings { view, notify: false, ..Settings::default() };
     let harness = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).with_theme(theme).wgpu().build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
@@ -341,6 +343,36 @@ fn links_open_the_right_pages() {
     h.get_all_by_label("…").next().unwrap().click();
     h.run_steps(3);
     assert_eq!(click_opens(&mut h, "All releases").as_deref(), Some("https://github.com/storytold/photocraft/releases"));
+}
+
+#[test]
+fn looks_again_at_installed_apps_every_few_minutes_not_every_frame() {
+    let sent = Rc::new(RefCell::new(Vec::new()));
+    let clock = Rc::new(Cell::new(NOW));
+    let mut backend = Some(Fake { events: events(), sent: sent.clone(), manage: true, clock: clock.clone() });
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), Settings { notify: false, ..Settings::default() }));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut NoHost);
+                l.ui(ui, &mut NoHost);
+            }
+        },
+        None,
+    );
+    let detects = |sent: &Rc<RefCell<Vec<Command>>>| sent.borrow().iter().filter(|c| **c == Command::Detect).count();
+    h.run_steps(10);
+    assert_eq!(detects(&sent), 0, "the backend's own startup detection is enough");
+    clock.set(NOW + 4 * 60);
+    h.run_steps(10);
+    assert_eq!(detects(&sent), 0, "not before five minutes");
+    clock.set(NOW + 5 * 60);
+    h.run_steps(10);
+    assert_eq!(detects(&sent), 1, "once at five minutes, not once per frame");
 }
 
 #[test]

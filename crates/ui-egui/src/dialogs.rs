@@ -83,6 +83,9 @@ impl LauncherUi {
             Some(artcraft_launcher_core::InstallSource::Deb | artcraft_launcher_core::InstallSource::Rpm) => {
                 "Your system's package manager will remove it, and may ask for your password. Your documents and settings stay."
             }
+            Some(artcraft_launcher_core::InstallSource::Pacman) => {
+                "It was installed from the AUR, so the launcher will show you the pacman command to remove it."
+            }
             _ => "The app will be removed. Your documents and settings stay.",
         };
         ui.label(RichText::new(how).color(t.text_muted));

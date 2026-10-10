@@ -14,7 +14,7 @@ use crate::manifest::Manifest;
 #[derive(Default)]
 pub struct Snapshot {
     #[allow(dead_code)]
-    packages: Vec<(String, String, artcraft_launcher_core::InstallSource)>,
+    packages: Vec<crate::packages::Package>,
 }
 
 impl Snapshot {
@@ -58,7 +58,12 @@ fn from_manifest(app: &CraftApp, manifest: &Manifest) -> Option<Installed> {
     if let Some(found) = macos::read_bundle(app, &rec.path) {
         return Some(found);
     }
-    Some(Installed { version: version::parse(&rec.version), source: InstallSource::Launcher, location: rec.path.display().to_string() })
+    Some(Installed {
+        version: version::parse(&rec.version),
+        source: InstallSource::Launcher,
+        location: rec.path.display().to_string(),
+        package: None,
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -93,7 +98,7 @@ pub mod macos {
         let full_key = format!("{}Version", app.name);
         let text =
             [full_key.as_str(), "CFBundleShortVersionString", "CFBundleVersion"].iter().find_map(|k| dict.get(k).and_then(plist::Value::as_string));
-        Some(Installed { version: text.and_then(version::parse), source: InstallSource::MacApp, location: path.display().to_string() })
+        Some(Installed { version: text.and_then(version::parse), source: InstallSource::MacApp, location: path.display().to_string(), package: None })
     }
 }
 
@@ -172,6 +177,7 @@ pub mod windows {
             version: m.version,
             source: InstallSource::Msi,
             location: m.exe.map_or_else(|| app.name.to_string(), |p| p.display().to_string()),
+            package: Some(m.product_code),
         })
     }
 }
@@ -184,44 +190,53 @@ pub mod linux {
     use artcraft_launcher_core::platform::parse_asset_name;
 
     use super::*;
+    use crate::packages::{self, Package};
     use crate::process::capture;
 
-    /// Installed Craft App packages: (name, version, source). Read once per detection pass.
-    pub fn packages() -> Vec<(String, String, InstallSource)> {
-        let wanted = |name: &str| artcraft_launcher_core::SUITE.iter().any(|a| a.id == name);
-        let mut out = Vec::new();
+    /// Installed Craft App packages from every package manager on this system (dpkg, rpm,
+    /// pacman, Flatpak). Read once per detection pass.
+    pub fn packages() -> Vec<Package> {
+        let ours = |name: &str| {
+            artcraft_launcher_core::SUITE.iter().any(|a| {
+                [InstallSource::Deb, InstallSource::Pacman, InstallSource::Flatpak]
+                    .iter()
+                    .any(|m| crate::packages::candidate_names(a, *m).iter().any(|n| n == name))
+            })
+        };
         let t = Duration::from_secs(10);
+        let mut out = Vec::new();
+        let mut add = |manager, list: Vec<(String, String)>| {
+            out.extend(list.into_iter().filter(|(n, _)| ours(n)).map(|(name, version)| Package { manager, name, version }));
+        };
         if let Some(list) = capture("dpkg-query", &["-W", "-f", "${Package}|${db:Status-Status}|${Version}\n"], t) {
-            for line in list.lines() {
-                let mut f = line.split('|');
-                if let (Some(name), Some("installed"), Some(ver)) = (f.next(), f.next(), f.next())
-                    && wanted(name)
-                {
-                    out.push((name.to_string(), ver.to_string(), InstallSource::Deb));
-                }
-            }
+            add(InstallSource::Deb, packages::parse_dpkg(&list));
         }
         if let Some(list) = capture("rpm", &["-qa", "--qf", "%{NAME}|%{VERSION}\n"], t) {
-            for line in list.lines() {
-                if let Some((name, ver)) = line.split_once('|')
-                    && wanted(name)
-                {
-                    out.push((name.to_string(), ver.to_string(), InstallSource::Rpm));
-                }
-            }
+            add(InstallSource::Rpm, packages::parse_rpm(&list));
+        }
+        if let Some(list) = capture("pacman", &["-Q"], t) {
+            add(InstallSource::Pacman, packages::parse_pacman(&list));
         }
         if let Some(list) = capture("flatpak", &["list", "--app", "--columns=application,version"], t) {
-            for line in list.lines() {
-                let mut f = line.split('\t');
-                if let (Some(id), Some(ver)) = (f.next(), f.next())
-                    && let Some(name) = id.strip_prefix("ai.storyteller.")
-                    && wanted(name)
-                {
-                    out.push((name.to_string(), ver.to_string(), InstallSource::Flatpak));
+            let mut flatpaks = packages::parse_flatpak_list(&list);
+            // Bundles built from a release tarball often list no version: ask Flatpak directly.
+            for (id, version) in flatpaks.iter_mut().filter(|(id, v)| v.is_empty() && id.starts_with("ai.storyteller.")) {
+                if let Some(v) = capture("flatpak", &["info", id], t).as_deref().and_then(packages::parse_flatpak_info) {
+                    *version = v;
                 }
             }
+            add(InstallSource::Flatpak, flatpaks);
         }
         out
+    }
+
+    /// Where a package put the app's binary: on `PATH`, else `/usr/bin/<id>`.
+    fn binary_on_path(id: &str) -> String {
+        std::env::var_os("PATH")
+            .and_then(|path| std::env::split_paths(&path).map(|d| d.join(id)).find(|p| p.is_file()))
+            .unwrap_or_else(|| PathBuf::from("/usr/bin").join(id))
+            .display()
+            .to_string()
     }
 
     /// `~/Applications`, where the launcher puts AppImages (the AppImageLauncher convention).
@@ -251,13 +266,12 @@ pub mod linux {
 
     pub fn detect(app: &CraftApp, snapshot: &Snapshot) -> Option<Installed> {
         if let Some((path, version)) = appimages(app).into_iter().next() {
-            return Some(Installed { version, source: InstallSource::AppImage, location: path.display().to_string() });
+            return Some(Installed { version, source: InstallSource::AppImage, location: path.display().to_string(), package: None });
         }
-        snapshot.packages.iter().find(|(name, _, _)| name == app.id).map(|(name, ver, source)| Installed {
-            version: version::parse(ver),
-            source: *source,
-            location: if *source == InstallSource::Flatpak { app.bundle_id() } else { format!("/usr/bin/{name}") },
-        })
+        let order = [InstallSource::Deb, InstallSource::Rpm, InstallSource::Pacman, InstallSource::Flatpak];
+        let p = packages::find(app, &snapshot.packages, &order)?;
+        let location = if p.manager == InstallSource::Flatpak { app.bundle_id() } else { binary_on_path(app.id) };
+        Some(Installed { version: packages::version_of(p), source: p.manager, location, package: Some(p.name.clone()) })
     }
 }
 
@@ -273,7 +287,7 @@ pub mod freebsd {
         if !bin.exists() {
             return None;
         }
-        Some(Installed { version: binary_version(&bin, app.id), source: InstallSource::Binary, location: bin.display().to_string() })
+        Some(Installed { version: binary_version(&bin, app.id), source: InstallSource::Binary, location: bin.display().to_string(), package: None })
     }
 
     /// `<app> --version` prints `<app> 0.5.0 (sha, date)`.
