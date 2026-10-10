@@ -41,6 +41,7 @@ pub fn social(service: &str) -> Option<ImageSource<'static>> {
         "YouTube" => egui::include_image!("../../../assets/social/youtube.svg"),
         "TikTok" => egui::include_image!("../../../assets/social/tiktok.svg"),
         "Instagram" => egui::include_image!("../../../assets/social/instagram.svg"),
+        "LinkedIn" => egui::include_image!("../../../assets/social/linkedin.svg"),
         _ => return None,
     })
 }
