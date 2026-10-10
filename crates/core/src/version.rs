@@ -57,8 +57,44 @@ pub fn parse_package(text: &str) -> Option<Version> {
     match parts.as_slice() {
         [a, b, c] => Version::parse(&format!("{a}.{b}.{c}")).ok(),
         [a, b] => Version::parse(&format!("{a}.{b}.0")).ok(),
-        _ => None,
+        // Text around the version, as in `--version` output (`PhotoCraft 0.5.0 (abc, 2026)`):
+        // the first `X.Y.Z` run anywhere.
+        _ => first_xyz(&t),
     }
+}
+
+/// The first `major.minor.patch` run anywhere in `text`.
+fn first_xyz(text: &str) -> Option<Version> {
+    let bytes = text.as_bytes();
+    for start in 0..bytes.len() {
+        if !bytes.get(start).is_some_and(u8::is_ascii_digit) || (start > 0 && bytes.get(start - 1).is_some_and(u8::is_ascii_digit)) {
+            continue;
+        }
+        let Some((major, i)) = digits(text, start) else { continue };
+        if bytes.get(i) != Some(&b'.') {
+            continue;
+        }
+        let Some((minor, j)) = digits(text, i + 1) else { continue };
+        if bytes.get(j) != Some(&b'.') {
+            continue;
+        }
+        let Some((patch, _)) = digits(text, j + 1) else { continue };
+        return Some(Version::new(major, minor, patch));
+    }
+    None
+}
+
+/// A run of ASCII digits from `from`, as a number and the index just past it.
+fn digits(text: &str, from: usize) -> Option<(u64, usize)> {
+    let bytes = text.as_bytes();
+    let mut end = from;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if end == from {
+        return None;
+    }
+    text.get(from..end)?.parse().ok().map(|n| (n, end))
 }
 
 /// A version that's a plain `X.Y.Z` with no pre-release suffix.
@@ -122,6 +158,10 @@ mod tests {
         assert_eq!(p("0.3.0.r47.g47f9306-1").as_deref(), Some("0.3.0"));
         // Plain versions (rpm %{VERSION}, Flatpak) pass through.
         assert_eq!(p("0.4.0").as_deref(), Some("0.4.0"));
+        assert_eq!(p("0.5").as_deref(), Some("0.5.0"));
+        // A version inside text, as `--version` prints it.
+        assert_eq!(p("PhotoCraft 0.5.0 (abc, 2026)").as_deref(), Some("0.5.0"));
+        assert_eq!(p("junk"), None);
         assert_eq!(p("garbage"), None);
         // The bug this guards: 0.5.0-1 used to read as a pre-release, so an installed .deb of the
         // latest release always looked out of date.

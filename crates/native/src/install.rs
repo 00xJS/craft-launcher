@@ -93,11 +93,12 @@ pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, prefe
             InstallSource::Msi => Some(PackageKind::Msi),
             InstallSource::Deb => Some(PackageKind::Deb),
             InstallSource::Rpm => Some(PackageKind::Rpm),
+            // Arch/AUR installs are owned by pacman and updated by the user's AUR helper (see
+            // `managed_elsewhere`); the launcher opens and removes them but never replaces them.
+            InstallSource::Pacman => None,
             InstallSource::Flatpak => Some(PackageKind::Flatpak),
             InstallSource::AppImage => Some(PackageKind::AppImage),
             InstallSource::Binary => Some(PackageKind::TarGz),
-            // Updated by the user's AUR helper; see `managed_elsewhere`.
-            InstallSource::Pacman => None,
         };
         if let Some(k) = kind.filter(|k| available.contains(k)) {
             return vec![k];
@@ -161,22 +162,20 @@ fn published_checksum(release: &Release, asset: &Asset, http: &Http) -> Result<O
     Ok(release::parse_sha256sums(&text).into_iter().find(|(_, n)| *n == asset.name).map(|(h, _)| h))
 }
 
-/// When `installed` is owned by a package manager the launcher doesn't drive (the AUR), what to
-/// tell the user instead of installing a second copy.
+/// When `installed` is owned by something the launcher doesn't drive, what to tell the user
+/// instead of installing a second copy. AUR packages are removed through pacman like any system
+/// package, but updated by the user's AUR helper, which builds as the user and can't run behind
+/// the password prompt.
 pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool) -> Option<String> {
     match installed.source {
-        InstallSource::Pacman => {
+        InstallSource::Pacman if !uninstall => {
             let pkg = installed.package.clone().unwrap_or_else(|| app.id.to_string());
-            Some(if uninstall {
-                format!("{} was installed from the AUR ({pkg}). Remove it with: sudo pacman -R {pkg}", app.name)
-            } else {
-                let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
-                let cmd = match helper {
-                    Some(h) => format!("{h} -S {pkg}"),
-                    None => format!("your AUR helper (for example: yay -S {pkg})"),
-                };
-                format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name)
-            })
+            let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
+            let cmd = match helper {
+                Some(h) => format!("{h} -S {pkg}"),
+                None => format!("your AUR helper (for example: yay -S {pkg})"),
+            };
+            Some(format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name))
         }
         InstallSource::Binary => Some(format!("{} was installed outside the launcher. Update or remove it the way it was installed.", app.name)),
         _ => None,
@@ -201,7 +200,7 @@ pub fn uninstall(app: &CraftApp, installed: &Installed, record: Option<&Record>)
         #[cfg(target_os = "macos")]
         InstallSource::MacApp | InstallSource::Launcher => macos::move_to_trash(&path),
         #[cfg(target_os = "linux")]
-        InstallSource::Deb | InstallSource::Rpm | InstallSource::Flatpak => linux::remove_package(app, installed.source),
+        InstallSource::Deb | InstallSource::Rpm | InstallSource::Pacman | InstallSource::Flatpak => linux::remove_package(app, installed),
         #[cfg(target_os = "freebsd")]
         InstallSource::Launcher => match record {
             Some(r) => freebsd::remove_files(&r.files, r.needs_root),
@@ -373,8 +372,8 @@ mod linux {
         }
     }
 
-    pub fn remove_package(app: &CraftApp, source: InstallSource) -> Result<(), String> {
-        match source {
+    pub fn remove_package(app: &CraftApp, installed: &Installed) -> Result<(), String> {
+        match installed.source {
             InstallSource::Deb => run_as_root(&[OsStr::new("apt-get"), OsStr::new("remove"), OsStr::new("-y"), OsStr::new(app.id)]),
             InstallSource::Rpm => {
                 if which("dnf").is_some() {
@@ -382,6 +381,11 @@ mod linux {
                 } else {
                     run_as_root(&[OsStr::new("rpm"), OsStr::new("-e"), OsStr::new(app.id)])
                 }
+            }
+            // The package detected (photocraft, photocraft-bin or photocraft-git).
+            InstallSource::Pacman => {
+                let pkg = installed.package.as_deref().unwrap_or(app.id);
+                run_as_root(&[OsStr::new("pacman"), OsStr::new("-R"), OsStr::new("--noconfirm"), OsStr::new(pkg)])
             }
             InstallSource::Flatpak => {
                 let id = app.bundle_id();
