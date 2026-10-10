@@ -245,7 +245,7 @@ pub fn mono_bold() -> FontFamily {
 type Face<'a> = (&'a str, &'static [u8], &'a [([u8; 4], f32)], FontFamily);
 
 /// Registers the site's three variable fonts, each at the weights (and width) it uses there.
-pub fn install_fonts(ctx: &egui::Context) {
+pub fn install_fonts(ctx: &egui::Context, cjk: bool) {
     const INTER: &[u8] = include_bytes!("../../../assets/fonts/Inter-Variable.ttf");
     const ARCHIVO: &[u8] = include_bytes!("../../../assets/fonts/Archivo-Variable.ttf");
     const GEIST_MONO: &[u8] = include_bytes!("../../../assets/fonts/GeistMono-Variable.ttf");
@@ -268,5 +268,46 @@ pub fn install_fonts(ctx: &egui::Context) {
         stack.extend(fallback.iter().cloned());
         fonts.families.insert(family, stack);
     }
+    // Chinese, behind everything else, from the system: only when asked for, as the font is large.
+    if cjk && let Some(font) = cjk_font() {
+        fonts.font_data.insert("CJK".to_owned(), font);
+        for stack in fonts.families.values_mut() {
+            stack.push("CJK".to_owned());
+        }
+    }
     ctx.set_fonts(fonts);
+}
+
+/// The system's Simplified Chinese font, read once on the first call (tens of MB). Desktop only:
+/// the web build has none, so Chinese can't be drawn there.
+pub fn cjk_font() -> Option<Arc<FontData>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        CJK_FONT.get_or_init(|| crate::cjk_font::load().map(Arc::new)).clone()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+}
+
+/// The system's Chinese font once [`cjk_font`] has looked for it.
+#[cfg(not(target_arch = "wasm32"))]
+static CJK_FONT: std::sync::OnceLock<Option<Arc<FontData>>> = std::sync::OnceLock::new();
+
+/// Has the system's Chinese font already been loaded? Never loads it.
+pub fn cjk_font_loaded() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        CJK_FONT.get().is_some_and(Option::is_some)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// Can Chinese be drawn? Loads the system font on the first call ([`cjk_font`]).
+pub fn cjk_font_available() -> bool {
+    cjk_font().is_some()
 }

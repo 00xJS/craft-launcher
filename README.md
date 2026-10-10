@@ -82,6 +82,20 @@ you when an update is out. It is a small native app that can sit in your menu ba
 
 The web version shows the same catalog in the browser, with the latest download for each app.
 
+## Interface languages
+
+The interface is in English, Russian (Русский) or Simplified Chinese (简体中文). **Auto**, the
+default, follows the system or browser language; **Settings → Language** picks one and switches
+at once, and the choice is kept between runs. Simplified Chinese locales (`zh-CN`, `zh-SG`,
+`zh-Hans`, and POSIX forms such as `zh_CN.UTF-8`) select Chinese; Traditional Chinese ones don't.
+To try a language without changing the setting, start the desktop app with
+`ARTCRAFT_LAUNCHER_LOCALE=zh-CN`, or add `?lang=ru` to the web address.
+
+Chinese is drawn with the system's own Chinese font (PingFang on macOS, Microsoft YaHei on
+Windows, Noto Sans CJK or WenQuanYi on Linux and FreeBSD). Where there is none, and in the web
+version, the interface stays in English and Settings says why. Product names and release notes
+stay as published; text without a translation falls back to English.
+
 ## Where apps are installed
 
 ArtCraft Launcher installs each app where your system normally keeps applications, using the

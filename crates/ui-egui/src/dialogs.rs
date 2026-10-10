@@ -156,13 +156,19 @@ impl LauncherUi {
             egui::ComboBox::from_id_salt("language").selected_text(Settings::language_label(&lang_code)).width(180.0).show_ui(ui, |ui| {
                 ui.selectable_value(&mut lang_code, Settings::LANGUAGE_AUTO.to_string(), tl!("Auto"));
                 for lang in crate::i18n::Lang::all() {
-                    ui.selectable_value(&mut lang_code, lang.code().to_string(), lang.name());
+                    ui.selectable_value(&mut lang_code, lang.code().to_string(), Settings::language_label(lang.code()));
                 }
             });
         });
         if lang_code != self.settings.language {
             self.settings.language = lang_code;
-            crate::i18n::set_current(crate::i18n::Lang::from_pref(&self.settings.language));
+            crate::i18n::set_current(crate::app::effective_lang(&self.settings.language));
+        }
+        if crate::i18n::Lang::from_pref(&self.settings.language).needs_cjk_font() && !theme::cjk_font_available() {
+            // In English on purpose: the language asked for can't be drawn.
+            let note = "No Chinese font was found on this system, so the interface stays in English. \
+                        Installing one (Noto Sans CJK, or WenQuanYi on Linux) and restarting fixes it.";
+            ui.add(egui::Label::new(RichText::new(note).size(12.0).color(t.warn)).wrap());
         }
 
         section(ui, tl!("Updates"));

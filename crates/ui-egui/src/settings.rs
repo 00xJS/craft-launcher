@@ -88,7 +88,8 @@ pub struct Settings {
     pub sort: SortKey,
     pub sort_descending: bool,
     pub theme: ThemeChoice,
-    /// Interface language: `auto` (follow the system) or a language code from the registry.
+    /// Interface language: `auto` (follow the system) or a language code from the registry
+    /// (`en`, `ru`, `zh-CN`).
     pub language: String,
     /// Closing the window keeps the launcher in the tray (menu bar) instead of quitting.
     pub close_to_tray: bool,
@@ -114,10 +115,17 @@ impl Settings {
     pub const LANGUAGE_AUTO: &'static str = "auto";
 
     /// Display name for a language `code`: a language's name in itself, from the registry
-    /// ([`LANGUAGES`](crate::i18n::LANGUAGES)), or "Auto" for `auto` and unknown codes, like
+    /// ([`LANGUAGES`](crate::i18n::LANGUAGES)). A language needing the system's Chinese font is
+    /// named in English, with its own name added only once that font is loaded (labels never load
+    /// it: choosing the language does); "Auto" for `auto` and unknown codes, like
     /// [`Lang::from_pref`](crate::i18n::Lang::from_pref).
     pub fn language_label(code: &str) -> String {
-        crate::i18n::Lang::from_code(code).map_or_else(|| t("Auto").to_string(), |lang| lang.name().to_string())
+        match crate::i18n::Lang::from_code(code) {
+            Some(lang) if lang.needs_cjk_font() && crate::theme::cjk_font_loaded() => format!("{} ({})", lang.english_name(), lang.name()),
+            Some(lang) if lang.needs_cjk_font() => lang.english_name().to_string(),
+            Some(lang) => lang.name().to_string(),
+            None => t("Auto").to_string(),
+        }
     }
 }
 

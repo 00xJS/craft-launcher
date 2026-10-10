@@ -7,14 +7,19 @@ use super::detect::system_lang;
 
 /// One supported UI language.
 pub struct LangInfo {
-    /// Canonical BCP 47 code (`en`, `ru`). Also the `interfaceLanguage` value.
+    /// Canonical BCP 47 code (`en`, `ru`, `zh-CN`). Also the `interfaceLanguage` value.
     pub code: &'static str,
     /// The language's name in itself, shown in the Preferences dropdown.
     pub name: &'static str,
+    /// The language's name in English, shown instead where its own script can't be drawn.
+    pub english_name: &'static str,
+    /// Does its script need a CJK font? The bundled faces have none, so it comes from the
+    /// system (`theme::cjk_font`).
+    pub cjk: bool,
     /// Catalog file contents (empty for the built-in English).
     pub source: &'static str,
     /// Plural form index for a count (English: 0 = one, 1 = other; Russian: 0 = one, 1 = few,
-    /// 2 = many).
+    /// 2 = many; Chinese: always 0).
     pub plural: fn(u64) -> usize,
     /// Number of plural forms the catalog's `@plural` rows carry (checked by tests).
     pub plural_forms: usize,
@@ -25,6 +30,11 @@ pub struct LangInfo {
 
 fn plural_one_other(n: u64) -> usize {
     usize::from(n != 1)
+}
+
+/// Languages whose nouns don't inflect for number (Chinese): one form for every count.
+fn plural_none(_: u64) -> usize {
+    0
 }
 
 /// Russian and Ukrainian integer counts: 1 (but not 11) is `one`, 2–4 (but not 12–14)
@@ -41,14 +51,37 @@ pub(super) fn plural_east_slavic(n: u64) -> usize {
 }
 
 /// The registry. English first: it is the fallback and the source language.
-pub static LANGUAGES: [LangInfo; 2] = [
-    LangInfo { code: "en", name: "English", source: "", plural: plural_one_other, plural_forms: 2, complete_menus: false, catalog: OnceLock::new() },
+pub static LANGUAGES: [LangInfo; 3] = [
+    LangInfo {
+        code: "en",
+        name: "English",
+        english_name: "English",
+        cjk: false,
+        source: "",
+        plural: plural_one_other,
+        plural_forms: 2,
+        complete_menus: false,
+        catalog: OnceLock::new(),
+    },
     LangInfo {
         code: "ru",
         name: "Русский",
+        english_name: "Russian",
+        cjk: false,
         source: include_str!("ru.tsv"),
         plural: plural_east_slavic,
         plural_forms: 3,
+        complete_menus: true,
+        catalog: OnceLock::new(),
+    },
+    LangInfo {
+        code: "zh-CN",
+        name: "简体中文",
+        english_name: "Simplified Chinese",
+        cjk: true,
+        source: include_str!("zh-CN.tsv"),
+        plural: plural_none,
+        plural_forms: 1,
         complete_menus: true,
         catalog: OnceLock::new(),
     },
@@ -81,6 +114,7 @@ impl Eq for Lang {}
 impl Lang {
     pub const EN: Lang = Lang(&LANGUAGES[0]);
     pub const RU: Lang = Lang(&LANGUAGES[1]);
+    pub const ZH_CN: Lang = Lang(&LANGUAGES[2]);
 
     pub fn code(self) -> &'static str {
         self.0.code
@@ -106,6 +140,16 @@ impl Lang {
         self.0.name
     }
 
+    /// The language's name in English.
+    pub fn english_name(self) -> &'static str {
+        self.0.english_name
+    }
+
+    /// Does drawing this language need a CJK font from the system?
+    pub fn needs_cjk_font(self) -> bool {
+        self.0.cjk
+    }
+
     /// Does this language's catalog claim to cover every `tl!` literal?
     pub fn complete_menus(self) -> bool {
         self.0.complete_menus
@@ -129,12 +173,27 @@ pub(super) fn candidates(tag: &str) -> Vec<String> {
     (1..=parts.len()).rev().filter_map(|n| parts.get(..n)).map(|p| p.join("-")).collect()
 }
 
-/// The registered language for a locale tag such as `ru_RU.UTF-8`, `ru-RU`; `None` if
-/// the language isn't supported. `C`/`POSIX` mean English.
+/// The registered language for a locale tag such as `ru_RU.UTF-8`, `ru-RU`, `zh-Hans-CN`;
+/// `None` if the language isn't supported. `C`/`POSIX` mean English.
 pub fn lang_from_tag(tag: &str) -> Option<Lang> {
     let cands = candidates(tag);
-    if matches!(cands.last().map(String::as_str), Some("c" | "posix")) {
-        return Some(Lang::EN);
+    match cands.last().map(String::as_str) {
+        Some("c" | "posix") => Some(Lang::EN),
+        Some("zh") => chinese(cands.first().map_or("zh", String::as_str)),
+        _ => cands.iter().find_map(|c| Lang::from_code(c)),
     }
-    cands.iter().find_map(|c| Lang::from_code(c))
+}
+
+/// Chinese by script: Simplified for `zh-Hans`, and for a bare `zh` or the regions that write
+/// Simplified (mainland China, Singapore) when no script is given. An explicit script wins over
+/// the region (`zh-Hant-CN` is Traditional); Traditional Chinese isn't offered.
+fn chinese(tag: &str) -> Option<Lang> {
+    let parts: Vec<&str> = tag.split('-').collect();
+    if parts.contains(&"hant") {
+        None
+    } else if parts.contains(&"hans") || parts.len() == 1 || parts.iter().any(|p| matches!(*p, "cn" | "sg")) {
+        Some(Lang::ZH_CN)
+    } else {
+        None
+    }
 }

@@ -334,6 +334,8 @@ dependencies = [
  "image",
  "log",
  "serde",
+ "serde_json",
+ "skrifa",
  "sys-locale",
 ]
 

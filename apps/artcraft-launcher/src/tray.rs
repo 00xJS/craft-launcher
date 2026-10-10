@@ -1,5 +1,7 @@
 //! The tray (menu bar) icon: show the window, check for updates, quit.
 
+use artcraft_launcher_ui_egui::i18n;
+
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
@@ -20,6 +22,8 @@ pub struct Tray {
     quit: MenuId,
     rx: Receiver<TrayAction>,
     tooltip: String,
+    language: String,
+    labels: Vec<(MenuItem, &'static str)>,
 }
 
 fn load_icon() -> Result<tray_icon::Icon, String> {
@@ -39,13 +43,13 @@ fn load_icon() -> Result<tray_icon::Icon, String> {
 impl Tray {
     /// Creates the tray icon. `wake` repaints the UI so it sees the action, even when hidden.
     pub fn new(wake: impl Fn() + Send + Sync + Clone + 'static) -> Result<Self, String> {
-        let show = MenuItem::new("Show ArtCraft Launcher", true, None);
-        let check = MenuItem::new("Check for Updates", true, None);
+        let show = MenuItem::new(i18n::t("Show ArtCraft Launcher"), true, None);
+        let check = MenuItem::new(i18n::t("Check for Updates"), true, None);
         use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
-        let website = MenuItem::new("Visit getartcraft.com", true, None);
-        let github = MenuItem::new("ArtCraft on GitHub", true, None);
-        let discord = MenuItem::new("Join the ArtCraft Discord", true, None);
-        let quit = MenuItem::new("Quit ArtCraft Launcher", true, None);
+        let website = MenuItem::new(i18n::t("Visit getartcraft.com"), true, None);
+        let github = MenuItem::new(i18n::t("ArtCraft on GitHub"), true, None);
+        let discord = MenuItem::new(i18n::t("Join the ArtCraft Discord"), true, None);
+        let quit = MenuItem::new(i18n::t("Quit ArtCraft Launcher"), true, None);
         let menu = Menu::new();
         menu.append_items(&[&show, &check, &PredefinedMenuItem::separator(), &website, &github, &discord, &PredefinedMenuItem::separator(), &quit])
             .map_err(|e| e.to_string())?;
@@ -86,7 +90,15 @@ impl Tray {
                 wake();
             }
         }));
-        Ok(Self { icon, show: show_id, check: check_id, quit: quit_id, rx, tooltip: String::new() })
+        let labels = vec![
+            (show, "Show ArtCraft Launcher"),
+            (check, "Check for Updates"),
+            (website, "Visit getartcraft.com"),
+            (github, "ArtCraft on GitHub"),
+            (discord, "Join the ArtCraft Discord"),
+            (quit, "Quit ArtCraft Launcher"),
+        ];
+        Ok(Self { icon, show: show_id, check: check_id, quit: quit_id, rx, tooltip: String::new(), language: String::new(), labels })
     }
 
     pub fn actions(&self) -> Vec<TrayAction> {
@@ -94,10 +106,17 @@ impl Tray {
     }
 
     pub fn set_updates(&mut self, count: usize) {
-        let tip = match count {
-            0 => "ArtCraft Launcher".to_string(),
-            1 => "ArtCraft Launcher · 1 update available".to_string(),
-            n => format!("ArtCraft Launcher · {n} updates available"),
+        let lang = i18n::current();
+        if self.language != lang.code() {
+            for (item, source) in &self.labels {
+                item.set_text(i18n::tr(lang, source));
+            }
+            self.language = lang.code().to_string();
+        }
+        let tip = if count == 0 {
+            "ArtCraft Launcher".to_string()
+        } else {
+            i18n::trn(lang, count as u64, "ArtCraft Launcher · {n} update available", "ArtCraft Launcher · {n} updates available")
         };
         if tip != self.tooltip {
             let _ = self.icon.set_tooltip(Some(&tip));

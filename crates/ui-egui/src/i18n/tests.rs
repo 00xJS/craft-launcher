@@ -130,6 +130,8 @@ fn complete_catalogs_cover_every_ui_literal() {
         include_str!("../settings.rs"),
         include_str!("../views.rs"),
         include_str!("../widgets.rs"),
+        // The desktop shell's tray menu and tooltip.
+        include_str!("../../../../apps/artcraft-launcher/src/tray.rs"),
     ];
     let mut keys = BTreeSet::new();
     for source in sources {
@@ -151,11 +153,11 @@ fn complete_catalogs_cover_every_ui_literal() {
         }
     }
     assert!(keys.len() > 100, "found only {} UI literals", keys.len());
-    // Plural keys: `tn(n, "one", "other")`.
+    // Plural keys: `tn(n, "one", "other")`, `trn(lang, n, "one", "other")`.
     let mut plurals = BTreeSet::new();
     for source in sources {
-        for (i, _) in source.match_indices("tn(") {
-            if source[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+        for (i, call) in source.match_indices("tn(").chain(source.match_indices("trn(")) {
+            if source[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_') || source[i + call.len()..].starts_with(')') {
                 continue;
             }
             let forms: Vec<&str> = source[i..].split('"').skip(1).step_by(2).take(2).collect();
@@ -228,11 +230,76 @@ fn locale_tags_resolve() {
 }
 
 #[test]
+fn simplified_chinese_locales_respect_the_script() {
+    for tag in ["zh", "zh-CN", "zh_CN.UTF-8", "zh-SG", "zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "ZH_cn"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::ZH_CN), "{tag}");
+    }
+    for tag in ["zh-TW", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-CN", "zh-Hant-SG", "zh_TW.UTF-8"] {
+        assert_eq!(lang_from_tag(tag), None, "{tag}");
+    }
+    // A Traditional Chinese system that also lists English gets English, not Simplified.
+    assert_eq!(super::detect::first_supported(["zh-Hant-TW", "en-US"]), Some(Lang::EN));
+}
+
+#[test]
+fn chinese_counts_and_english_fallback_work() {
+    for n in [0, 1, 2, 11, 100] {
+        assert_eq!(trn(Lang::ZH_CN, n, "{n} app", "{n} apps"), format!("{n} 个应用"));
+        assert_eq!(trn(Lang::ZH_CN, n, "{n} min ago", "{n} min ago"), format!("{n} 分钟前"));
+    }
+    assert_eq!(trn(Lang::ZH_CN, 2, "{n} unknown item", "{n} unknown items"), "2 unknown items");
+    assert_eq!(tr(Lang::ZH_CN, "Untranslated diagnostic"), "Untranslated diagnostic");
+    assert_eq!(message(Lang::ZH_CN, "PhotoCraft updated to 0.5.0"), "PhotoCraft 已更新至 0.5.0");
+}
+
+/// With the system's Chinese font installed, every UI family can draw the whole Chinese catalog.
+/// Machines without one (CI, the web) skip this; the UI then stays in English.
+#[test]
+fn system_font_covers_chinese_in_every_ui_family() {
+    use egui::{FontFamily, FontId};
+    if !crate::theme::cjk_font_available() {
+        return;
+    }
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, true);
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    let text: String = Lang::ZH_CN
+        .0
+        .source
+        .lines()
+        .filter_map(|line| line.split('\t').nth(2))
+        .flat_map(str::chars)
+        .filter(|c| ('\u{3400}'..='\u{9fff}').contains(c))
+        .collect();
+    assert!(text.chars().count() > 500);
+    for family in [
+        FontFamily::Proportional,
+        FontFamily::Monospace,
+        crate::theme::medium(),
+        crate::theme::semibold(),
+        crate::theme::display(),
+        crate::theme::mono(),
+        crate::theme::mono_bold(),
+    ] {
+        ctx.fonts_mut(|fonts| assert!(fonts.has_glyphs(&FontId::new(14.0, family.clone()), &text), "missing glyph in {family:?}"));
+    }
+}
+
+#[test]
 fn language_labels_come_from_the_registry() {
     use crate::settings::Settings;
-    for lang in Lang::all() {
+    for lang in Lang::all().filter(|l| !l.needs_cjk_font()) {
         assert_eq!(Settings::language_label(lang.code()), lang.name());
     }
+    // Chinese: in English until its font is loaded (which a label never does), then both.
+    // (Other tests may load the font meanwhile.)
+    let before = crate::theme::cjk_font_loaded();
+    let label = Settings::language_label(Lang::ZH_CN.code());
+    let after = crate::theme::cjk_font_loaded();
+    assert!(label == "Simplified Chinese (简体中文)" || label == "Simplified Chinese", "{label}");
+    assert!(!before || label.contains("简体中文"), "{label}");
+    assert!(after || !label.contains("简体中文"), "{label}");
     assert_eq!(Settings::language_label(Settings::LANGUAGE_AUTO), "Auto");
     assert_eq!(Settings::language_label("xx"), "Auto");
 }
