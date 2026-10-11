@@ -250,6 +250,19 @@ fn german_counts_dates_and_messages_work() {
 }
 
 #[test]
+fn french_locales_and_plurals_work() {
+    for tag in ["fr", "fr-FR", "fr_CA.UTF-8", "fr-BE", "FR_ch"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::FR), "{tag}");
+    }
+    assert_eq!(super::detect::first_supported(["xx-XX", "fr-FR", "en-US"]), Some(Lang::FR));
+    // 0 and 1 are singular in French, unlike English.
+    assert_eq!(trn(Lang::FR, 0, "{n} app", "{n} apps"), "0 application");
+    assert_eq!(trn(Lang::FR, 1, "{n} app", "{n} apps"), "1 application");
+    assert_eq!(trn(Lang::FR, 2, "{n} app", "{n} apps"), "2 applications");
+    assert_eq!(trn(Lang::FR, 3, "{n} day ago", "{n} days ago"), "il y a 3 jours");
+}
+
+#[test]
 fn simplified_chinese_locales_respect_the_script() {
     for tag in ["zh", "zh-CN", "zh_CN.UTF-8", "zh-SG", "zh-Hans", "zh-Hans-CN", "zh-Hans-HK", "ZH_cn"] {
         assert_eq!(lang_from_tag(tag), Some(Lang::ZH_CN), "{tag}");

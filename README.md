@@ -84,10 +84,10 @@ The web version shows the same catalog in the browser, with the latest download 
 
 ## Interface languages
 
-The interface is in English, German (Deutsch), Russian (Русский) or Simplified Chinese
+The interface is in English, French (Français), German (Deutsch), Russian (Русский) or Simplified Chinese
 (简体中文). **Auto**, the default, follows the system or browser language; **Settings → Language**
 picks one and switches at once, and the choice is kept between runs. German locales (`de-DE`,
-`de-AT`, `de-CH`, `de_DE.UTF-8`…) select German. Simplified Chinese locales (`zh-CN`, `zh-SG`,
+`de-AT`, `de-CH`, `de_DE.UTF-8`…) select German, and French ones (`fr-FR`, `fr-CA`…) French. Simplified Chinese locales (`zh-CN`, `zh-SG`,
 `zh-Hans`, and POSIX forms such as `zh_CN.UTF-8`) select Chinese; Traditional Chinese ones don't.
 To try a language without changing the setting, start the desktop app with
 `ARTCRAFT_LAUNCHER_LOCALE=zh-CN`, or add `?lang=ru` to the web address.
