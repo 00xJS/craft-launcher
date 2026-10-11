@@ -357,6 +357,7 @@ mod tests {
         let src = dir.path().join("src");
         bundle(&src, "0.2.0");
         let dmg = dir.path().join("artcraft-launcher-0.2.0-macos-universal.dmg");
+        let one_at_a_time = install::macos::DISK_IMAGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let ok = std::process::Command::new("hdiutil")
             .args(["create", "-quiet", "-format", "UDZO", "-volname", "ArtCraft Launcher 0.2.0", "-srcfolder"])
             .arg(&src)
@@ -365,6 +366,7 @@ mod tests {
             .unwrap()
             .success();
         assert!(ok, "hdiutil create failed");
+        drop(one_at_a_time);
         let current = apps.join("ArtCraft Launcher.app");
         let existing = Installed { version: None, source: InstallSource::MacApp, location: current.display().to_string(), package: None };
         // An unsigned test bundle: the signature check has its own tests in `install`.

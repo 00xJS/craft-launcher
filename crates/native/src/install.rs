@@ -732,13 +732,39 @@ pub mod macos {
         }
     }
 
+    /// Held while this process asks diskimages-helper for something (an attach here; the tests'
+    /// `hdiutil create` too), since it turns concurrent requests away.
+    pub(crate) static DISK_IMAGES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     pub fn install_dmg(app: &CraftApp, dmg: &Path, existing: Option<&Installed>, paths: &Paths, expect: &Expect<'_>) -> Result<PathBuf, String> {
         let mount = paths.cache.join(format!("mount-{}", app.id));
         let _ = detach(&mount);
         std::fs::create_dir_all(&mount).map_err(|e| e.to_string())?;
         let (Some(dmg_s), Some(mount_s)) = (dmg.to_str(), mount.to_str()) else { return Err("unusual characters in the cache folder's path".into()) };
-        process::capture("hdiutil", &["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount_s, dmg_s], Duration::from_secs(120))
-            .ok_or("couldn't open the disk image")?;
+        // diskimages-helper refuses an attach while it is busy with another image ("Resource
+        // temporarily unavailable"): attach one image at a time (several apps may be updating at
+        // once), and wait a little and try again when something outside the launcher holds it.
+        let attached = {
+            let _one_at_a_time = DISK_IMAGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let attach = || {
+                process::capture(
+                    "hdiutil",
+                    &["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mount_s, dmg_s],
+                    Duration::from_secs(120),
+                )
+            };
+            let mut attached = attach();
+            for wait in [1, 2, 4, 8] {
+                if attached.is_some() {
+                    break;
+                }
+                let _ = detach(&mount);
+                std::thread::sleep(Duration::from_secs(wait));
+                attached = attach();
+            }
+            attached
+        };
+        attached.ok_or("couldn't open the disk image")?;
         let result = copy_app(app, &mount, existing, expect);
         let _ = detach(&mount);
         let _ = std::fs::remove_dir(&mount);
@@ -1358,6 +1384,7 @@ mod tests {
             let src = dir.join(format!("src-{version}"));
             bundle(&src, version);
             let dmg = dir.join(format!("photocraft-{version}-macos-universal.dmg"));
+            let _one_at_a_time = super::macos::DISK_IMAGES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let ok = std::process::Command::new("hdiutil")
                 .args(["create", "-quiet", "-format", "UDZO", "-volname", "PhotoCraft", "-srcfolder"])
                 .arg(&src)
