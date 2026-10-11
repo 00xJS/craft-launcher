@@ -468,7 +468,7 @@ fn run_install(
         shared.emit(Event::Progress { app: app.id.to_string(), phase: p });
     };
     let mut job = Job { http, paths, stop, phase: &mut phase };
-    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, &mut job)?;
+    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, record, &mut job)?;
     {
         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
         let changed = match new_record {

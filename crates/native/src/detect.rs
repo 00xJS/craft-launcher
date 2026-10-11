@@ -3,7 +3,9 @@
 //! - macOS: `<App>.app` in `/Applications` or `~/Applications`, read from its `Info.plist`.
 //! - Windows: the Windows Installer's uninstall entries (`Learning Machines LLC`), and portable
 //!   copies the launcher unpacked.
-//! - Linux: AppImages in `~/Applications`, Debian/RPM packages, Flatpaks, and tarball installs.
+//! - Linux: AppImages in `~/Applications` (where the launcher and AppImageLauncher put them),
+//!   `~/AppImages` (Gear Lever) and `~/.local/bin`, Debian/RPM packages, Flatpaks, and tarball
+//!   installs.
 //! - FreeBSD: tarball installs and `/usr/local/bin/<app>`.
 
 use artcraft_launcher_core::{CraftApp, InstallSource, Installed, version};
@@ -64,6 +66,24 @@ fn from_manifest(app: &CraftApp, manifest: &Manifest) -> Option<Installed> {
         location: rec.path.display().to_string(),
         package: None,
     })
+}
+
+/// Whether a file name is an AppImage of the app with asset stems `stems`, and the version its
+/// name gives. Matches only the names a release AppImage ends up with: the release's own
+/// (`photocraft-0.6.0-linux-x86_64.AppImage`) and the bare app name Gear Lever renames it to
+/// (`photocraft.appimage`, version unknown). The extension's case doesn't matter.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn appimage_version(name: &str, stems: &[&str]) -> Option<Option<String>> {
+    let split = name.len().checked_sub(".appimage".len())?;
+    let (base, ext) = (name.get(..split)?, name.get(split..)?);
+    if !ext.eq_ignore_ascii_case(".appimage") {
+        return None;
+    }
+    if stems.iter().any(|s| base.eq_ignore_ascii_case(s)) {
+        return Some(None);
+    }
+    let parsed = artcraft_launcher_core::platform::parse_asset_name(&format!("{base}.AppImage"), stems)?;
+    (parsed.kind == artcraft_launcher_core::PackageKind::AppImage && parsed.token.starts_with("linux-")).then_some(Some(parsed.version))
 }
 
 #[cfg(target_os = "macos")]
@@ -187,8 +207,6 @@ pub mod linux {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use artcraft_launcher_core::platform::parse_asset_name;
-
     use super::*;
     use crate::packages::{self, Package};
     use crate::process::capture;
@@ -244,24 +262,50 @@ pub mod linux {
         dirs::home_dir().map(|h| h.join("Applications"))
     }
 
-    /// AppImages of `app` in `~/Applications`, newest first.
-    pub fn appimages(app: &CraftApp) -> Vec<(PathBuf, Option<version::Version>)> {
-        let Some(dir) = appimage_dir() else { return Vec::new() };
-        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    /// Every folder searched for AppImages, the launcher's own first: `~/Applications`,
+    /// `~/AppImages` (Gear Lever's default) and `~/.local/bin`.
+    pub fn appimage_dirs() -> Vec<PathBuf> {
+        let Some(home) = dirs::home_dir() else { return Vec::new() };
+        vec![home.join("Applications"), home.join("AppImages"), home.join(".local").join("bin")]
+    }
+
+    /// AppImages of `app` in `dirs`, newest first (unknown versions last; earlier folders win
+    /// ties).
+    pub fn appimages_in(app: &CraftApp, dirs: &[PathBuf]) -> Vec<(PathBuf, Option<version::Version>)> {
         let stems: Vec<&str> = app.stems().collect();
-        let mut out: Vec<(PathBuf, Option<version::Version>)> = entries
-            .flatten()
-            .filter_map(|e| {
-                let name = e.file_name().into_string().ok()?;
-                let parsed = parse_asset_name(&name, &stems)?;
-                (parsed.kind == artcraft_launcher_core::PackageKind::AppImage).then(|| (e.path(), version::parse(&parsed.version)))
-            })
-            .collect();
+        let mut out: Vec<(PathBuf, Option<version::Version>)> = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else { continue };
+            let mut found: Vec<(PathBuf, Option<version::Version>)> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().into_string().ok()?;
+                    let version = appimage_version(&name, &stems)?;
+                    let path = e.path();
+                    path.is_file().then(|| (path, version.as_deref().and_then(version::parse)))
+                })
+                .collect();
+            found.sort_by(|a, b| a.0.cmp(&b.0));
+            out.extend(found);
+        }
+        // Stable sort: equal versions keep the folder order above.
         out.sort_by(|a, b| match (&b.1, &a.1) {
             (Some(x), Some(y)) => version::compare(x, y),
-            _ => std::cmp::Ordering::Equal,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (None, None) => std::cmp::Ordering::Equal,
         });
         out
+    }
+
+    /// AppImages of `app` in any of the usual folders, newest first.
+    pub fn appimages(app: &CraftApp) -> Vec<(PathBuf, Option<version::Version>)> {
+        appimages_in(app, &appimage_dirs())
+    }
+
+    /// AppImages of `app` in the launcher's own folder only (the ones an update replaces).
+    pub fn launcher_appimages(app: &CraftApp) -> Vec<PathBuf> {
+        appimage_dir().map(|d| appimages_in(app, &[d]).into_iter().map(|(p, _)| p).collect()).unwrap_or_default()
     }
 
     pub fn detect(app: &CraftApp, snapshot: &Snapshot) -> Option<Installed> {
@@ -322,7 +366,7 @@ pub mod freebsd {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests {
+mod linux_tests {
     use super::*;
 
     #[test]
@@ -349,5 +393,61 @@ mod tests {
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         let ver = linux::binary_version(&bin, photo.id);
         assert_eq!(ver.unwrap().to_string(), "0.6.0");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognises_appimage_names_conservatively() {
+        let pdf = ["pdfcraft", "printcraft"];
+        let v = |n: &str| appimage_version(n, &pdf);
+        assert_eq!(v("pdfcraft-0.3.0-linux-x86_64.AppImage"), Some(Some("0.3.0".into())));
+        assert_eq!(v("printcraft-0.2.1-linux-aarch64.appimage"), Some(Some("0.2.1".into())));
+        assert_eq!(v("pdfcraft-0.3.0-rc.1-linux-x86_64.AppImage"), Some(Some("0.3.0-rc.1".into())));
+        // Gear Lever's rename, and a plain rename by hand.
+        assert_eq!(v("pdfcraft.appimage"), Some(None));
+        assert_eq!(v("PdfCraft.AppImage"), Some(None));
+        for other in [
+            "pdfcraft-0.3.0-linux-x86_64.AppImage.zsync",
+            "pdfcraft-0.3.0-linux-x86_64.deb",
+            "pdfcraft-0.3.0-windows-x64.AppImage",
+            "pdfcraft-cli-0.3.0-linux-x86_64.AppImage",
+            "photocraft-0.6.0-linux-x86_64.AppImage",
+            "mypdfcraft.AppImage",
+            "pdfcraft-latest.AppImage",
+            ".appimage",
+            "x",
+        ] {
+            assert_eq!(v(other), None, "{other}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finds_appimages_in_every_folder_newest_first() {
+        let app = CraftApp::by_id("photocraft").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (apps, gear, bin) = (root.path().join("Applications"), root.path().join("AppImages"), root.path().join("bin"));
+        for d in [&apps, &gear, &bin] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::write(apps.join("photocraft-0.5.0-linux-x86_64.AppImage"), b"").unwrap();
+        std::fs::write(apps.join("wordcraft-0.3.0-linux-x86_64.AppImage"), b"").unwrap();
+        std::fs::write(gear.join("photocraft.appimage"), b"").unwrap();
+        std::fs::write(bin.join("photocraft-0.6.0-linux-x86_64.AppImage"), b"").unwrap();
+        std::fs::create_dir(bin.join("photocraft.AppImage")).unwrap();
+        let found = linux::appimages_in(app, &[apps.clone(), gear.clone(), bin.clone(), root.path().join("missing")]);
+        let names: Vec<_> = found.iter().map(|(p, v)| (p.clone(), v.as_ref().map(ToString::to_string))).collect();
+        assert_eq!(
+            names,
+            [
+                (bin.join("photocraft-0.6.0-linux-x86_64.AppImage"), Some("0.6.0".to_string())),
+                (apps.join("photocraft-0.5.0-linux-x86_64.AppImage"), Some("0.5.0".to_string())),
+                (gear.join("photocraft.appimage"), None),
+            ]
+        );
     }
 }

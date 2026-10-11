@@ -7,8 +7,9 @@
 //! - Linux: the distro's own package (`.deb` through apt on the Debian family, `.rpm` through
 //!   dnf/zypper/rpm on the Fedora, Red Hat and SUSE families, read from `os-release`) with the
 //!   system's polkit password prompt; otherwise a Flatpak, otherwise an AppImage in
-//!   `~/Applications` (the AppImage convention). A Flatpak or AppImage launcher prefers its own
-//!   format.
+//!   `~/Applications` (the AppImage convention), with a menu entry and icon in
+//!   `~/.local/share` so it shows up like any other app. A Flatpak or AppImage launcher prefers
+//!   its own format.
 //! - FreeBSD: the release's `/usr/local` tree, with a polkit prompt (or `~/.local` without one).
 //!
 //! Every download is checked against its published SHA-256 before anything is unpacked, a
@@ -35,14 +36,17 @@ pub struct Job<'a> {
 
 /// Downloads and installs `asset` of `release`. Returns a record when the launcher owns the
 /// result (portable zip, AppImage, tarball); MSI and macOS installs are found by detection.
+/// `previous` is the launcher's record of the copy being replaced, if it installed it.
 pub fn install(
     app: &CraftApp,
     release: &Release,
     asset: &Asset,
     kind: PackageKind,
     existing: Option<&Installed>,
+    previous: Option<&Record>,
     job: &mut Job<'_>,
 ) -> Result<(Option<Record>, Verified), String> {
+    let _ = previous;
     if let Some(inst) = existing
         && inst.source.launcher_can_update()
         && process::is_running(Path::new(&inst.location))
@@ -62,9 +66,10 @@ pub fn install(
         #[cfg(target_os = "linux")]
         PackageKind::Deb | PackageKind::Rpm | PackageKind::Flatpak => linux::install_package(kind, &file, job.stop, &mut *job.phase).map(|_| None),
         #[cfg(target_os = "linux")]
-        PackageKind::AppImage => {
-            linux::install_appimage(app, &file, &asset.name, existing).map(|path| Some(record(&version, kind, path, Vec::new(), false)))
-        }
+        PackageKind::AppImage => linux::install_appimage(app, &file, &asset.name, existing).map(|(path, replaced)| {
+            let files = linux::integrate(app, &path, &replaced, previous);
+            Some(record(&version, kind, path, files, false))
+        }),
         #[cfg(target_os = "freebsd")]
         PackageKind::TarGz => freebsd::install_tree(app, &file, job.paths).map(|(bin, files, root)| Some(record(&version, kind, bin, files, root))),
         other => Err(format!("{} isn't supported on this system", other.label())),
@@ -221,24 +226,27 @@ pub fn uninstall(app: &CraftApp, installed: &Installed, record: Option<&Record>,
             None => Err("the launcher has no record of these files".into()),
         },
         #[cfg(target_os = "linux")]
-        InstallSource::AppImage | InstallSource::Launcher => remove_appimage(app, &path),
+        InstallSource::AppImage | InstallSource::Launcher => remove_appimage(app, &path, record),
         other => Err(format!("{} can't be removed from here", other.label())),
     }
 }
 
-#[allow(dead_code)]
-/// Deletes an AppImage, and the menu entry it created for itself on first run.
-fn remove_appimage(app: &CraftApp, path: &Path) -> Result<(), String> {
-    if path.extension().is_none_or(|e| e != "AppImage") || !path.is_file() {
+/// Deletes an AppImage, the menu entry and icon the launcher wrote for it, and the menu entry
+/// the app may have written for itself on first run.
+#[cfg(target_os = "linux")]
+fn remove_appimage(app: &CraftApp, path: &Path, record: Option<&Record>) -> Result<(), String> {
+    if path.extension().is_none_or(|e| !e.eq_ignore_ascii_case("AppImage")) || !path.is_file() {
         return Err(format!("{} isn't an AppImage, so it was left alone", path.display()));
     }
-    std::fs::remove_file(path).map_err(|e| format!("couldn't remove {} ({e})", path.display()))?;
-    if let Some(data) = dirs::data_dir() {
-        let desktop = data.join("applications").join(format!("{}.desktop", app.bundle_id()));
-        if std::fs::read_to_string(&desktop).is_ok_and(|t| t.contains(&path.display().to_string())) {
-            let _ = std::fs::remove_file(desktop);
-        }
+    // AppImages found elsewhere (Gear Lever's ~/AppImages, ~/.local/bin) are the user's own:
+    // remove only the launcher's folder or a copy the launcher recorded installing.
+    let ours =
+        path.parent().is_some_and(|dir| crate::detect::linux::appimage_dir().is_some_and(|own| own == dir)) || record.is_some_and(|r| r.path == path);
+    if !ours {
+        return Err(format!("{} wasn't installed by the launcher. Remove it the way it was added.", path.display()));
     }
+    std::fs::remove_file(path).map_err(|e| format!("couldn't remove {} ({e})", path.display()))?;
+    linux::unintegrate(app, path, record);
     Ok(())
 }
 
@@ -530,8 +538,10 @@ pub(crate) mod linux {
     }
 
     /// Copies an AppImage into `~/Applications` and makes it executable; removes the copy it
-    /// replaces.
-    pub fn install_appimage(app: &CraftApp, file: &Path, name: &str, existing: Option<&Installed>) -> Result<PathBuf, String> {
+    /// replaces when that one is the launcher's (in `~/Applications`). AppImages the user keeps
+    /// elsewhere (Gear Lever's `~/AppImages`, `~/.local/bin`) are left alone. Returns the new
+    /// path and the old copies removed.
+    pub fn install_appimage(app: &CraftApp, file: &Path, name: &str, existing: Option<&Installed>) -> Result<(PathBuf, Vec<PathBuf>), String> {
         let dir = crate::detect::linux::appimage_dir().ok_or("no home folder")?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("couldn't create {} ({e})", dir.display()))?;
         let dest = dir.join(name);
@@ -539,15 +549,140 @@ pub(crate) mod linux {
         std::fs::copy(file, &partial).map_err(|e| format!("couldn't copy the AppImage ({e})"))?;
         std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
         std::fs::rename(&partial, &dest).map_err(|e| format!("couldn't put the AppImage in place ({e})"))?;
-        // Older AppImages of this app (the one we replaced, or earlier downloads) go.
-        let mut old: Vec<PathBuf> = crate::detect::linux::appimages(app).into_iter().map(|(p, _)| p).collect();
-        if let Some(inst) = existing.filter(|i| matches!(i.source, InstallSource::AppImage | InstallSource::Launcher)) {
+        // Older AppImages of this app in the launcher's folder (the one we replaced, or earlier
+        // downloads) go, and the copy the launcher's record pointed at.
+        let mut old = crate::detect::linux::launcher_appimages(app);
+        if let Some(inst) = existing.filter(|i| i.source == InstallSource::Launcher) {
             old.push(PathBuf::from(&inst.location));
         }
-        for p in old.into_iter().filter(|p| *p != dest && p.extension().is_some_and(|e| e == "AppImage")) {
-            let _ = std::fs::remove_file(p);
+        old.sort();
+        old.dedup();
+        let mut removed = Vec::new();
+        for p in old.into_iter().filter(|p| *p != dest && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("AppImage"))) {
+            if std::fs::remove_file(&p).is_ok() {
+                removed.push(p);
+            }
         }
-        Ok(dest)
+        Ok((dest, removed))
+    }
+
+    /// Where menu entries and icons go: `$XDG_DATA_HOME`, else `~/.local/share`. Inside the
+    /// launcher's own Flatpak that variable points into the sandbox, so the host's is used.
+    pub fn host_data_dir() -> Option<PathBuf> {
+        if Path::new("/.flatpak-info").exists() {
+            if let Some(dir) = std::env::var_os("HOST_XDG_DATA_HOME").map(PathBuf::from).filter(|p| p.is_absolute()) {
+                return Some(dir);
+            }
+            return dirs::home_dir().map(|h| h.join(".local").join("share"));
+        }
+        dirs::data_dir()
+    }
+
+    /// The app's 128 px icon, as bundled in `assets/app-icons`.
+    fn icon_png(app: &CraftApp) -> Option<&'static [u8]> {
+        Some(match app.id {
+            "photocraft" => include_bytes!("../../../assets/app-icons/photocraft.png"),
+            "vectorcraft" => include_bytes!("../../../assets/app-icons/vectorcraft.png"),
+            "filmcraft" => include_bytes!("../../../assets/app-icons/filmcraft.png"),
+            "lightcraft" => include_bytes!("../../../assets/app-icons/lightcraft.png"),
+            "pdfcraft" => include_bytes!("../../../assets/app-icons/pdfcraft.png"),
+            "effectcraft" => include_bytes!("../../../assets/app-icons/effectcraft.png"),
+            "designcraft" => include_bytes!("../../../assets/app-icons/designcraft.png"),
+            "wordcraft" => include_bytes!("../../../assets/app-icons/wordcraft.png"),
+            "deckcraft" => include_bytes!("../../../assets/app-icons/deckcraft.png"),
+            "gridcraft" => include_bytes!("../../../assets/app-icons/gridcraft.png"),
+            "cadcraft" => include_bytes!("../../../assets/app-icons/cadcraft.png"),
+            "soundcraft" => include_bytes!("../../../assets/app-icons/soundcraft.png"),
+            _ => return None,
+        })
+    }
+
+    fn desktop_path(data: &Path, app: &CraftApp) -> PathBuf {
+        data.join("applications").join(format!("{}.desktop", app.bundle_id()))
+    }
+
+    fn icon_path(data: &Path, app: &CraftApp) -> PathBuf {
+        data.join("icons/hicolor/128x128/apps").join(format!("{}.png", app.bundle_id()))
+    }
+
+    /// Adds `appimage` to the desktop's menu. Best effort: a failure here never fails the
+    /// install. Returns the files written, for the record.
+    pub fn integrate(app: &CraftApp, appimage: &Path, replaced: &[PathBuf], previous: Option<&Record>) -> Vec<PathBuf> {
+        match host_data_dir() {
+            Some(data) => integrate_into(&data, app, appimage, replaced, previous),
+            None => Vec::new(),
+        }
+    }
+
+    /// [`integrate`] into the data folder `data`. Only writes over files the launcher wrote
+    /// before: its own marked menu entry, an entry pointing at a copy this install replaced, and
+    /// an icon listed in `previous`.
+    pub(crate) fn integrate_into(data: &Path, app: &CraftApp, appimage: &Path, replaced: &[PathBuf], previous: Option<&Record>) -> Vec<PathBuf> {
+        let ours_before = |p: &Path| previous.is_some_and(|r| r.files.iter().any(|f| f == p));
+        let mut written = Vec::new();
+        let icon = icon_path(data, app);
+        let has_icon = match icon_png(app) {
+            Some(png) if !icon.exists() || ours_before(&icon) => match crate::paths::write_atomic(&icon, png) {
+                Ok(()) => {
+                    written.push(icon.clone());
+                    true
+                }
+                Err(e) => {
+                    log::warn!("{}: couldn't install the menu icon: {e}", app.name);
+                    false
+                }
+            },
+            // Someone else's icon under the app's id (the app's own AppImage puts one there).
+            _ => icon.is_file(),
+        };
+        let Some(text) = crate::desktop_entry::render(app, appimage, has_icon) else {
+            log::warn!("{}: {} can't be written into a menu entry; skipping it", app.name, appimage.display());
+            return written;
+        };
+        let desktop = desktop_path(data, app);
+        let replace = match std::fs::read_to_string(&desktop) {
+            Ok(old) => {
+                crate::desktop_entry::is_ours(&old)
+                    || crate::desktop_entry::exec_program(&old)
+                        .is_some_and(|p| Path::new(&p) == appimage || replaced.iter().any(|r| r == Path::new(&p)))
+            }
+            Err(_) => !desktop.exists(),
+        };
+        if !replace {
+            log::info!("{}: leaving the existing menu entry {} alone", app.name, desktop.display());
+            return written;
+        }
+        match crate::paths::write_atomic(&desktop, text.as_bytes()) {
+            Ok(()) => written.push(desktop),
+            Err(e) => log::warn!("{}: couldn't add the menu entry: {e}", app.name),
+        }
+        written
+    }
+
+    /// Takes away what [`integrate`] added for the removed AppImage `appimage`.
+    pub fn unintegrate(app: &CraftApp, appimage: &Path, record: Option<&Record>) {
+        if let Some(data) = host_data_dir() {
+            unintegrate_from(&data, app, appimage, record);
+        }
+    }
+
+    /// [`unintegrate`] from the data folder `data`: the menu entry when it runs the removed copy,
+    /// or when the launcher wrote it and what it runs is gone; the icon only when the
+    /// launcher's record lists it.
+    pub(crate) fn unintegrate_from(data: &Path, app: &CraftApp, appimage: &Path, record: Option<&Record>) {
+        let desktop = desktop_path(data, app);
+        if let Ok(text) = std::fs::read_to_string(&desktop) {
+            let program = crate::desktop_entry::exec_program(&text).map(PathBuf::from);
+            let runs_removed = program.as_deref() == Some(appimage);
+            let ours_and_dangling = crate::desktop_entry::is_ours(&text) && program.is_none_or(|p| !p.exists());
+            if runs_removed || ours_and_dangling {
+                let _ = std::fs::remove_file(&desktop);
+            }
+        }
+        let icon = icon_path(data, app);
+        if record.is_some_and(|r| r.files.contains(&icon)) {
+            let _ = std::fs::remove_file(&icon);
+        }
     }
 }
 
@@ -932,7 +1067,7 @@ mod tests {
         for _ in 0..2 {
             let mut phase = |p: JobPhase| phases.push(p);
             let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase };
-            let err = install(app, &release, &asset, kind, None, &mut job).unwrap_err();
+            let err = install(app, &release, &asset, kind, None, None, &mut job).unwrap_err();
             assert!(err.contains("isn't supported"), "{err}");
             assert_eq!(std::fs::read(download_path(&paths, &asset)).unwrap(), body);
         }
@@ -943,7 +1078,7 @@ mod tests {
         let unchecked = Asset { name: "wordcraft-0.3.1-test.pkg".into(), sha256: None, ..asset };
         let mut phase = |_: JobPhase| {};
         let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase };
-        install(app, &release, &unchecked, kind, None, &mut job).unwrap_err();
+        install(app, &release, &unchecked, kind, None, None, &mut job).unwrap_err();
         assert!(!download_path(&paths, &unchecked).exists());
         assert_eq!(requests.lock().unwrap().len(), 2);
     }
@@ -1081,6 +1216,65 @@ mod tests {
         assert_eq!(ran.len(), 1, "{ran:?}");
         let error = "the system installer stopped with error 100 while handling 2 apps together. Try them one at a time.";
         assert_eq!(results, vec![Err(error.to_string()); 2]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adds_and_removes_only_its_own_menu_entry_and_icon() {
+        let app = CraftApp::by_id("wordcraft").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let data = root.path().join("share");
+        let desktop = data.join("applications/ai.storyteller.wordcraft.desktop");
+        let icon = data.join("icons/hicolor/128x128/apps/ai.storyteller.wordcraft.png");
+        let old = root.path().join("My Apps/wordcraft-0.2.0-linux-x86_64.AppImage");
+        let new = root.path().join("My Apps/wordcraft-0.3.0-linux-x86_64.AppImage");
+        std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+        std::fs::write(&new, b"").unwrap();
+
+        // Fresh install: entry and icon written and recorded.
+        let files = linux::integrate_into(&data, app, &new, &[], None);
+        assert_eq!(files, [icon.clone(), desktop.clone()]);
+        let text = std::fs::read_to_string(&desktop).unwrap();
+        assert!(text.contains("Exec=\"") && text.contains("My Apps/wordcraft-0.3.0-linux-x86_64.AppImage\" %F\n"), "{text}");
+        assert!(text.contains("Icon=ai.storyteller.wordcraft\n"));
+        assert!(std::fs::read(&icon).unwrap().starts_with(b"\x89PNG"));
+        let rec = record("0.3.0", PackageKind::AppImage, new.clone(), files, false);
+
+        // An update rewrites both.
+        assert_eq!(linux::integrate_into(&data, app, &new, &[], Some(&rec)).len(), 2);
+
+        // Someone else's entry and icon are left alone (and not recorded).
+        std::fs::write(&desktop, "[Desktop Entry]\nExec=/usr/bin/wordcraft\n").unwrap();
+        std::fs::write(&icon, b"theirs").unwrap();
+        assert!(linux::integrate_into(&data, app, &new, &[], None).is_empty());
+        assert_eq!(std::fs::read(&icon).unwrap(), b"theirs");
+        // ...unless the entry runs a copy this install just replaced (the app wrote it itself).
+        std::fs::write(&desktop, format!("[Desktop Entry]\nExec=\"{}\" %F\n", old.display())).unwrap();
+        assert_eq!(linux::integrate_into(&data, app, &new, std::slice::from_ref(&old), None), std::slice::from_ref(&desktop));
+        assert!(desktop_entry_is_ours(&desktop));
+
+        // Uninstall: an icon the record doesn't list stays; the entry for the removed copy goes.
+        std::fs::remove_file(&new).unwrap();
+        linux::unintegrate_from(&data, app, &new, None);
+        assert!(!desktop.exists());
+        assert_eq!(std::fs::read(&icon).unwrap(), b"theirs");
+        // With the record, the launcher's icon goes too.
+        std::fs::remove_file(&icon).unwrap();
+        std::fs::write(&new, b"").unwrap();
+        let files = linux::integrate_into(&data, app, &new, &[], None);
+        let rec = record("0.3.0", PackageKind::AppImage, new.clone(), files, false);
+        std::fs::remove_file(&new).unwrap();
+        linux::unintegrate_from(&data, app, &new, Some(&rec));
+        assert!(!desktop.exists() && !icon.exists());
+        // Someone else's entry survives an uninstall.
+        std::fs::write(&desktop, "[Desktop Entry]\nExec=/usr/bin/wordcraft\n").unwrap();
+        linux::unintegrate_from(&data, app, &new, Some(&rec));
+        assert!(desktop.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    fn desktop_entry_is_ours(path: &Path) -> bool {
+        crate::desktop_entry::is_ours(&std::fs::read_to_string(path).unwrap())
     }
 
     #[test]
