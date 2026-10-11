@@ -335,9 +335,75 @@ jobs:
           path: dist/release/*
           if-no-files-found: error
 
+  linux-riscv64:
+    name: Linux riscv64
+    needs: version
+    # Cross-compiled on x86_64 (no hosted RISC-V runners) against the runner's own Ubuntu release
+    # from ports.ubuntu.com, so the binaries need that release's glibc (24.04: 2.39). 22.04's
+    # riscv64 ports lag its amd64 updates, which breaks the multiarch install. deb, rpm, and
+    # tar.gz; artcraft-launcher --version is smoke-tested under QEMU. Follows PhotoCraft's job.
+    runs-on: ubuntu-24.04
+    # No `environment: release`: this job reads no secrets, so a branch dry run can run it.
+    env:
+      ARTCRAFT_LAUNCHER_VERSION: ${{ needs.version.outputs.version }}
+      ARTCRAFT_LAUNCHER_BUILD_DATE: ${{ needs.version.outputs.date }}
+      NFPM_VERSION: 2.47.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: riscv64gc-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux-riscv64
+      - name: Apply version override
+        if: inputs.version != ''
+        run: cargo xtask version set "$ARTCRAFT_LAUNCHER_VERSION"
+      - name: Install cross-compilation dependencies
+        run: |
+          . /etc/os-release
+          sudo dpkg --add-architecture riscv64
+          # Pin the existing (archive.ubuntu.com) sources to amd64; riscv64 comes from ports.
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i '/^Types: deb/a Architectures: amd64' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's/^deb /deb [arch=amd64] /g' /etc/apt/sources.list
+            sudo sed -i 's/^deb-src /deb-src [arch=amd64] /g' /etc/apt/sources.list
+          fi
+          for suite in "$VERSION_CODENAME" "$VERSION_CODENAME-updates" "$VERSION_CODENAME-security"; do
+            echo "deb [arch=riscv64] http://ports.ubuntu.com/ubuntu-ports $suite main universe restricted multiverse"
+          done | sudo tee /etc/apt/sources.list.d/riscv64.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-riscv64-linux-gnu binutils-riscv64-linux-gnu libc6-dev-riscv64-cross libc6-dev:riscv64 qemu-user \
+            libxkbcommon-dev:riscv64 libwayland-dev:riscv64 libx11-dev:riscv64 libxrandr-dev:riscv64 \
+            libxi-dev:riscv64 libgl1-mesa-dev:riscv64 \
+            desktop-file-utils appstream
+          curl -fsSL -o "$RUNNER_TEMP/nfpm.deb" \
+            "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_amd64.deb"
+          sudo dpkg -i "$RUNNER_TEMP/nfpm.deb"
+      - name: Build and package (deb, rpm, tar.gz)
+        env:
+          CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_GNU_LINKER: riscv64-linux-gnu-gcc
+          PKG_CONFIG_SYSROOT_DIR: /
+          PKG_CONFIG_PATH: /usr/lib/riscv64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          CROSS_ARCH: riscv64
+          CROSS_TARGET: riscv64gc-unknown-linux-gnu
+          CROSS_COMPILE: riscv64-linux-gnu-
+          EMULATOR: qemu-riscv64
+          QEMU_LD_PREFIX: /usr/riscv64-linux-gnu
+        run: packaging/linux/package.sh --formats "deb rpm tar"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-riscv64
+          path: dist/release/*
+          if-no-files-found: error
+
   release:
     name: Draft GitHub Release
-    needs: [version, macos, windows, linux, flatpak, freebsd, web]
+    needs: [version, macos, windows, linux, linux-riscv64, flatpak, freebsd, web]
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -364,8 +430,13 @@ jobs:
           for a in x64 x86 arm64; do
             expected+=("artcraft-launcher-$VERSION-windows-$a.msi" "artcraft-launcher-$VERSION-windows-$a-portable.zip")
           done
+          for a in x86_64 aarch64 riscv64; do
+            for ext in deb rpm tar.gz; do
+              expected+=("artcraft-launcher-$VERSION-linux-$a.$ext")
+            done
+          done
           for a in x86_64 aarch64; do
-            for ext in AppImage AppImage.zsync deb rpm tar.gz flatpak; do
+            for ext in AppImage AppImage.zsync flatpak; do
               expected+=("artcraft-launcher-$VERSION-linux-$a.$ext")
             done
           done
