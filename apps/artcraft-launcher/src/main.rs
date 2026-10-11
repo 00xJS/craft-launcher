@@ -119,15 +119,49 @@ fn native_options(hidden: bool) -> eframe::NativeOptions {
 /// Vulkan goes through vendor ICDs and third-party overlay layers, and on hybrid AMD laptops whose
 /// integrated and discrete GPUs run different driver packages (common on OEM machines, where the
 /// Adrenalin installer leaves the integrated GPU on the OEM driver) it crashes inside
-/// `amdvlk64.dll` before the first frame. `WGPU_BACKEND` still overrides the default.
+/// `amdvlk64.dll` before the first frame. `WGPU_BACKEND` still overrides the default, and then
+/// wgpu picks the adapter itself.
 #[cfg(windows)]
 fn wgpu_options() -> eframe::WgpuConfiguration {
-    use eframe::wgpu::Backends;
+    use eframe::wgpu::{Backends, PowerPreference};
     let mut config = eframe::WgpuConfiguration::default();
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
-        setup.instance_descriptor.backends = Backends::from_env().unwrap_or(Backends::DX12 | Backends::GL);
+        if let Some(backends) = Backends::from_env() {
+            setup.instance_descriptor.backends = backends;
+        } else {
+            setup.instance_descriptor.backends = Backends::DX12 | Backends::GL;
+            let integrated = setup.power_preference == PowerPreference::LowPower;
+            setup.native_adapter_selector = Some(Arc::new(move |adapters, surface| {
+                adapters
+                    .iter()
+                    .filter(|a| surface.is_none_or(|s| a.is_surface_supported(s)))
+                    .min_by_key(|a| {
+                        let info = a.get_info();
+                        adapter_rank(info.backend, info.device_type, integrated)
+                    })
+                    .cloned()
+                    .ok_or_else(|| "no graphics adapter can draw to the window".to_owned())
+            }));
+        }
     }
     config
+}
+
+/// wgpu's own adapter order (by device type, then enumeration order), except that any Direct3D 12
+/// adapter, the WARP software one included, comes before GL. wgpu ranks WARP last, so on GPUs with
+/// no D3D12 driver (Intel HD 4000, Radeon TeraScale) it picked the GL one, whose legacy driver
+/// failed `Surface::configure` and wgpu panicked before the window opened.
+#[cfg(any(windows, test))]
+fn adapter_rank(backend: eframe::wgpu::Backend, device_type: eframe::wgpu::DeviceType, integrated: bool) -> (bool, u8) {
+    use eframe::wgpu::{Backend, DeviceType};
+    let device = match device_type {
+        DeviceType::DiscreteGpu => 1 + u8::from(integrated),
+        DeviceType::IntegratedGpu => 2 - u8::from(integrated),
+        DeviceType::Other => 3,
+        DeviceType::VirtualGpu => 4,
+        DeviceType::Cpu => 5,
+    };
+    (backend != Backend::Dx12, device)
 }
 
 #[cfg(not(windows))]
@@ -753,5 +787,19 @@ mod tests {
         shell.put_away(&ctx);
         assert!(!shell.visible);
         assert!(!shell.launcher.closed_to_tray);
+    }
+
+    #[test]
+    fn warp_beats_a_gl_gpu_but_not_a_d3d12_gpu() {
+        use eframe::wgpu::{Backend, DeviceType};
+        // Intel HD 4000 + Radeon HD 7600M have no D3D12 driver; their GL one fails to configure.
+        let warp = adapter_rank(Backend::Dx12, DeviceType::Cpu, false);
+        assert!(warp < adapter_rank(Backend::Gl, DeviceType::IntegratedGpu, false));
+        assert!(warp < adapter_rank(Backend::Gl, DeviceType::Other, false));
+        // Hardware D3D12 still wins, in wgpu's order for the power preference.
+        let (discrete, integrated) = (DeviceType::DiscreteGpu, DeviceType::IntegratedGpu);
+        assert!(adapter_rank(Backend::Dx12, integrated, false) < warp);
+        assert!(adapter_rank(Backend::Dx12, discrete, false) < adapter_rank(Backend::Dx12, integrated, false));
+        assert!(adapter_rank(Backend::Dx12, integrated, true) < adapter_rank(Backend::Dx12, discrete, true));
     }
 }
