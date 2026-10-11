@@ -4,9 +4,11 @@
 //!
 //! - macOS: the signed `.app` from the release DMG into `/Applications`.
 //! - Windows: the release MSI (Windows Installer) into `C:\Program Files\<App>`.
-//! - Linux: the distro's package (`.deb` through apt, `.rpm` through dnf/zypper/rpm) with the
+//! - Linux: the distro's own package (`.deb` through apt on the Debian family, `.rpm` through
+//!   dnf/zypper/rpm on the Fedora, Red Hat and SUSE families, read from `os-release`) with the
 //!   system's polkit password prompt; otherwise a Flatpak, otherwise an AppImage in
-//!   `~/Applications` (the AppImage convention).
+//!   `~/Applications` (the AppImage convention). A Flatpak or AppImage launcher prefers its own
+//!   format.
 //! - FreeBSD: the release's `/usr/local` tree, with a polkit prompt (or `~/.local` without one).
 //!
 //! Every download is checked against its published SHA-256 before anything is unpacked, a
@@ -359,6 +361,7 @@ pub(crate) mod linux {
     use std::ffi::{OsStr, OsString};
     use std::os::unix::fs::PermissionsExt;
 
+    use artcraft_launcher_core::distro;
     use artcraft_launcher_core::protocol::CANCELLED;
 
     use super::*;
@@ -418,15 +421,18 @@ pub(crate) mod linux {
     /// The default package format aligns with how the user installed the launcher itself:
     /// - Running as a Flatpak: prefers Flatpak (per-user, desktop integration).
     /// - Running as an AppImage: prefers AppImage.
-    /// - Otherwise (system install): prefers native distro packages (`.deb` / `.rpm`),
-    ///   then Flatpak if available, then AppImage.
+    /// - Otherwise (system install): prefers the distro's own package format (`.deb` on the
+    ///   Debian family, `.rpm` on the Fedora, Red Hat and SUSE families, read from `os-release`
+    ///   rather than from whichever tools are on `PATH`), then Flatpak if available, then AppImage.
     pub fn available_kinds() -> Vec<PackageKind> {
         let flatpak = process::is_flatpak_available();
         let is_flatpak = process::in_sandbox();
         let is_appimage = std::env::var_os("APPIMAGE").is_some();
         let root = which("pkexec").is_some();
-        let can_deb = root && which("apt-get").is_some() && which("dpkg").is_some();
-        let can_rpm = root && which("rpm").is_some() && which("dpkg").is_none();
+        let os = ["/etc/os-release", "/usr/lib/os-release"].iter().find_map(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+        let native = distro::native_package(&distro::parse_os_release(&os));
+        let can_deb = root && native == Some(PackageKind::Deb) && which("apt-get").is_some() && which("dpkg").is_some();
+        let can_rpm = root && native == Some(PackageKind::Rpm) && which("rpm").is_some();
         order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm)
     }
 
@@ -462,6 +468,9 @@ pub(crate) mod linux {
 
     /// Installs (or upgrades) a downloaded package with the system's own tools.
     pub fn install_package(kind: PackageKind, file: &Path, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
+        if kind == PackageKind::Deb && which("apt-get").is_none() {
+            return Err("this system has no apt-get to install a Debian package with".into());
+        }
         install_package_via(&SYSTEM, kind, file, stop, phase)
     }
 
@@ -490,7 +499,8 @@ pub(crate) mod linux {
     pub fn remove_package(app: &CraftApp, installed: &Installed, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         let mut remove = |command: &[&str], package: &str| as_root(&SYSTEM, command, OsStr::new(package), stop, phase, JobPhase::Removing);
         match installed.source {
-            InstallSource::Deb => remove(&["apt-get", "-o", APT_WAITS, "remove", "-y"], app.id),
+            InstallSource::Deb if which("apt-get").is_some() => remove(&["apt-get", "-o", APT_WAITS, "remove", "-y"], app.id),
+            InstallSource::Deb => remove(&["dpkg", "-r"], app.id),
             InstallSource::Rpm => {
                 if which("dnf").is_some() {
                     remove(&["dnf", "remove", "-y"], app.id)
