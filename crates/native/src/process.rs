@@ -128,7 +128,72 @@ pub fn is_running(path: &Path) -> bool {
             .is_some_and(|out| out.to_ascii_lowercase().contains(&name.to_ascii_lowercase()))
     } else {
         let Some(p) = path.to_str() else { return false };
+        let pattern = pgrep_pattern(p);
         // pgrep exits 0 when something matches; it never matches itself.
-        capture("pgrep", &["-f", "--", p], Duration::from_secs(5)).is_some()
+        capture("pgrep", &["-f", "--", &pattern], Duration::from_secs(5)).is_some()
+    }
+}
+
+/// Quote the path's metacharacters for pgrep's extended regular expression.
+fn pgrep_pattern(path: &str) -> String {
+    let mut pattern = String::with_capacity(path.len());
+    for c in path.chars() {
+        if matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\') {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern
+}
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use std::io::{BufRead, BufReader};
+    use std::process::Child;
+
+    use super::*;
+
+    struct RunningProbe(Child);
+
+    impl RunningProbe {
+        fn start(path: &str) -> Self {
+            let child = command("/bin/sh")
+                .args(["-c", "printf 'ready\\n'; read line", path])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let mut probe = Self(child);
+            let mut ready = String::new();
+            BufReader::new(probe.0.stdout.take().unwrap()).read_line(&mut ready).unwrap();
+            assert_eq!(ready, "ready\n");
+            probe
+        }
+    }
+
+    impl Drop for RunningProbe {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn running_paths_are_matched_literally() {
+        let root = format!("/tmp/artcraft-launcher-process-{}", std::process::id());
+        for (actual, requested, expected) in [
+            ("plain/PhotoCraft.app", "plain/PhotoCraft.app", true),
+            ("Apps (work)/PhotoCraft.app", "Apps (work)/PhotoCraft.app", true),
+            ("Apps [work]/PhotoCraft.app", "Apps [work]/PhotoCraft.app", true),
+            ("other/PhotoCraftXapp", "other/PhotoCraft.app", false),
+            ("symbols/应用.^$*+?()[]{}|\\.app", "symbols/应用.^$*+?()[]{}|\\.app", true),
+        ] {
+            let actual = format!("{root}/{actual}");
+            let requested = format!("{root}/{requested}");
+            let _probe = RunningProbe::start(&actual);
+            assert_eq!(is_running(Path::new(&requested)), expected, "{requested}");
+        }
     }
 }
