@@ -52,6 +52,8 @@ enum Primary {
 pub(crate) const HEADER_H: f32 = 48.0;
 /// Height of the footer bar.
 pub(crate) const FOOTER_H: f32 = 34.0;
+/// The footer drops its platform label rather than leave the status less room than this.
+const FOOTER_MIN_STATUS_W: f32 = 300.0;
 
 const CARD_MIN_W: f32 = 320.0;
 const CARD_H: f32 = 280.0;
@@ -291,51 +293,81 @@ impl LauncherUi {
     pub(crate) fn footer(&mut self, ui: &mut Ui) {
         let t = Tokens::get(ui.ctx());
         let now = self.backend.now();
-        ui.horizontal_centered(|ui| {
-            if self.checking {
-                widgets::hud(ui, tl!("Checking for updates…"), t.faint);
-            } else if let Some(at) = self.settings.last_check {
-                let ago = ago_text(at, now);
-                let text = match self.sources_label() {
-                    Some(using) => fmt(tl!("Checked {ago} · using {sources}"), &[("ago", &ago), ("sources", &using)]),
-                    None => fmt(tl!("Checked {ago}"), &[("ago", &ago)]),
-                };
-                widgets::hud(ui, &text, t.faint);
-            } else {
-                widgets::hud(ui, tl!("Not checked yet"), t.faint);
+        let status = if self.checking {
+            tl!("Checking for updates…").to_string()
+        } else if let Some(at) = self.settings.last_check {
+            let ago = ago_text(at, now);
+            match self.sources_label() {
+                Some(using) => fmt(tl!("Checked {ago} · using {sources}"), &[("ago", &ago), ("sources", &using)]),
+                None => fmt(tl!("Checked {ago}"), &[("ago", &ago)]),
             }
-            if let Some(until) = self.rate_limited_until.filter(|u| *u > now) {
-                ui.label(
-                    RichText::new(format!(
-                        "· {}",
-                        fmt(
-                            tl!("GitHub's hourly limit was reached; full details return in {min} min"),
-                            &[("min", &((until - now) / 60).max(1).to_string())]
-                        )
-                    ))
-                    .size(12.0)
-                    .color(t.warn),
-                );
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let label = match self.platform {
-                    Some(p) if self.caps.manage_apps => fmt(tl!("Installing for {platform}"), &[("platform", &p.label())]),
-                    Some(p) => fmt(tl!("Downloads for {platform}"), &[("platform", &p.label())]),
-                    None => tl!("No downloads for this system").into(),
-                };
-                widgets::hud(ui, &label, t.faint);
+        } else {
+            tl!("Not checked yet").to_string()
+        };
+        // The full notice, and a short one for a narrow window.
+        let notice = self.rate_limited_until.filter(|u| *u > now).map(|until| {
+            let min = ((until - now) / 60).max(1).to_string();
+            let full = fmt(tl!("GitHub's hourly limit was reached; full details return in {min} min"), &[("min", &min)]);
+            let short = fmt(tl!("GitHub limit hit; back in {min} min"), &[("min", &min)]);
+            (format!("· {full}"), format!("· {short}"))
+        });
+        let platform = match self.platform {
+            Some(p) if self.caps.manage_apps => fmt(tl!("Installing for {platform}"), &[("platform", &p.label())]),
+            Some(p) => fmt(tl!("Downloads for {platform}"), &[("platform", &p.label())]),
+            None => tl!("No downloads for this system").into(),
+        };
+        use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, SOCIAL, WEBSITE_URL};
+        let links = [(tl!("Discord"), DISCORD_URL), (tl!("GitHub"), GITHUB_URL), (tl!("Website"), WEBSITE_URL)];
+        let (icon, link_gap) = (13.0, 16.0);
+        // The links and icons on the right keep their size; the status on the left gets what is
+        // left and is cut short with "…", never drawn under them. A narrow window drops the
+        // platform label first, so the status keeps room to be read.
+        let spacing = ui.spacing().item_spacing.x;
+        let links_w: f32 =
+            links.iter().map(|(text, _)| widgets::hud_galley(ui, &format!("{text} ↗"), t.muted).size().x + link_gap).sum::<f32>() - link_gap;
+        let icons_w = SOCIAL.len() as f32 * (icon + 8.0);
+        let platform_w = widgets::hud_galley(ui, &platform, t.faint).size().x + 16.0 + spacing;
+        let left_w = ui.available_width() - icons_w - 12.0 - links_w - 16.0 - 3.0 * spacing;
+        let show_platform = left_w - platform_w >= FOOTER_MIN_STATUS_W;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if show_platform {
+                widgets::hud(ui, &platform, t.faint);
                 ui.add_space(16.0);
-                // Right to left, so this reads: Website · GitHub · Discord, then the social icons.
-                ui.scope(|ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
-                    widgets::social_icons(ui, 13.0);
+            }
+            // Right to left, so this reads: Website · GitHub · Discord, then the social icons.
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                widgets::social_icons(ui, icon);
+            });
+            ui.add_space(12.0);
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing.x = link_gap;
+                for (text, url) in links {
+                    widgets::hud_link(ui, text, url);
+                }
+            });
+            ui.add_space(16.0);
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                // While GitHub is rate limited, saying so matters more than when we last checked.
+                let avail = ui.available_width();
+                let text = |s: &str| RichText::new(s).size(12.0).color(t.warn);
+                let width = |ui: &Ui, s: &str| {
+                    egui::WidgetText::from(text(s)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body).size().x
+                        + spacing
+                };
+                // The short notice once the full one would leave the status under a third.
+                let notice = notice.map(|(full, short)| {
+                    let w = width(ui, &full);
+                    if w <= avail * 0.7 { (full, None, w) } else { (short.clone(), Some(full), width(ui, &short)) }
                 });
-                ui.add_space(12.0);
-                ui.spacing_mut().item_spacing.x = 16.0;
-                use artcraft_launcher_core::catalog::{DISCORD_URL, GITHUB_URL, WEBSITE_URL};
-                widgets::hud_link(ui, tl!("Discord"), DISCORD_URL);
-                widgets::hud_link(ui, tl!("GitHub"), GITHUB_URL);
-                widgets::hud_link(ui, tl!("Website"), WEBSITE_URL);
+                let notice_w = notice.as_ref().map_or(0.0, |(_, _, w)| *w);
+                widgets::hud_elided(ui, &status, t.faint, (avail - notice_w).max(avail * 0.3));
+                if let Some((shown, full, _)) = notice {
+                    let resp = ui.add(egui::Label::new(text(&shown)).truncate());
+                    if let Some(full) = full {
+                        resp.on_hover_text(full);
+                    }
+                }
             });
         });
     }

@@ -182,6 +182,7 @@ month	Nov	Nov.
 month	Dec	Dez.
 	Not checked yet	Noch nicht geprüft
 	GitHub's hourly limit was reached; full details return in {min} min	Das Stundenlimit von GitHub ist erreicht; alle Details sind in {min} Min. wieder da
+	GitHub limit hit; back in {min} min	GitHub-Limit erreicht; zurück in {min} Min.
 	Installing for {platform}	Installation für {platform}
 	Downloads for {platform}	Downloads für {platform}
 	No downloads for this system	Keine Downloads für dieses System
