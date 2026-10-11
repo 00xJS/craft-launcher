@@ -17,6 +17,7 @@ pub mod manifest;
 pub mod packages;
 pub mod paths;
 pub mod process;
+pub mod proxy;
 pub mod queue;
 pub mod self_update;
 pub mod single_instance;

@@ -55,8 +55,11 @@ impl Http {
         // and trusts what antivirus HTTPS scanning installs. Reading the store ourselves missed
         // both ("invalid peer certificate: UnknownIssuer").
         let tls = || ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+        // Chosen once: the proxy environment variables, else the OS proxy setting.
+        let proxy = crate::proxy::pick();
         let small = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
             .user_agent(USER_AGENT)
@@ -64,6 +67,7 @@ impl Http {
             .new_agent();
         let feed = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_connect(Some(Duration::from_secs(5)))
             .timeout_global(Some(Duration::from_secs(10)))
             .http_status_as_error(false)
@@ -72,6 +76,7 @@ impl Http {
             .new_agent();
         let no_redirect = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
             .max_redirects(0)
@@ -81,6 +86,7 @@ impl Http {
             .new_agent();
         let download = ureq::Agent::config_builder()
             .tls_config(tls())
+            .proxy(proxy.clone())
             .timeout_connect(Some(Duration::from_secs(20)))
             .timeout_recv_response(Some(Duration::from_secs(60)))
             // ureq has no idle timeout: cap each attempt instead, and resume where it stopped.
