@@ -73,9 +73,7 @@ pub fn candidate_names(app: &CraftApp, manager: InstallSource) -> Vec<String> {
         InstallSource::Pacman => {
             app.stems().flat_map(|s| [s.to_string(), format!("{s}-bin"), format!("{s}-git")]).chain(std::iter::once(app.bundle_id())).collect()
         }
-        InstallSource::Deb | InstallSource::Rpm => {
-            app.stems().map(str::to_string).chain(std::iter::once(app.bundle_id())).collect()
-        }
+        InstallSource::Deb | InstallSource::Rpm => app.stems().map(str::to_string).chain(std::iter::once(app.bundle_id())).collect(),
         _ => app.stems().map(str::to_string).collect(),
     }
 }
