@@ -850,7 +850,7 @@ fn custom_title_bar_has_window_buttons() {
         }
     }
     let mut backend = Some(Fake { events: events(), sent: Rc::new(RefCell::new(Vec::new())), manage: true, clock: Rc::new(Cell::new(NOW)) });
-    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).wgpu().build_ui_state(
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
                 && let Some(b) = backend.take()
