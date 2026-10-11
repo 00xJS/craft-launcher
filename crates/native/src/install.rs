@@ -245,7 +245,7 @@ pub fn launch(app: &CraftApp, installed: &Installed) -> Result<(), String> {
     let path = Path::new(&installed.location);
     match installed.source {
         InstallSource::Flatpak => {
-            let mut cmd = process::command("flatpak");
+            let mut cmd = process::flatpak_command();
             cmd.args(["run", &app.bundle_id()]);
             process::spawn_detached(cmd)
         }
@@ -413,21 +413,50 @@ pub(crate) mod linux {
         }
     }
 
-    /// What this system can install: its own package format first (when polkit can ask for
-    /// permission), then Flatpak, then AppImage, which works everywhere.
+    /// What this system can install, ordered with the best default first.
+    ///
+    /// The default package format aligns with how the user installed the launcher itself:
+    /// - Running as a Flatpak: prefers Flatpak (per-user, desktop integration).
+    /// - Running as an AppImage: prefers AppImage.
+    /// - Otherwise (system install): prefers native distro packages (`.deb` / `.rpm`),
+    ///   then Flatpak if available, then AppImage.
     pub fn available_kinds() -> Vec<PackageKind> {
-        let mut kinds = Vec::new();
+        let flatpak = process::is_flatpak_available();
+        let is_flatpak = process::in_sandbox();
+        let is_appimage = std::env::var_os("APPIMAGE").is_some();
         let root = which("pkexec").is_some();
-        if root && which("apt-get").is_some() && which("dpkg").is_some() {
+        let can_deb = root && which("apt-get").is_some() && which("dpkg").is_some();
+        let can_rpm = root && which("rpm").is_some() && which("dpkg").is_none();
+        order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm)
+    }
+
+    pub(crate) fn order_available_kinds(
+        is_flatpak: bool,
+        is_appimage: bool,
+        flatpak_available: bool,
+        can_deb: bool,
+        can_rpm: bool,
+    ) -> Vec<PackageKind> {
+        let mut kinds = Vec::new();
+        if is_flatpak && flatpak_available {
+            kinds.push(PackageKind::Flatpak);
+        } else if is_appimage {
+            kinds.push(PackageKind::AppImage);
+        }
+
+        if can_deb {
             kinds.push(PackageKind::Deb);
         }
-        if root && which("rpm").is_some() && which("dpkg").is_none() {
+        if can_rpm {
             kinds.push(PackageKind::Rpm);
         }
-        if which("flatpak").is_some() {
+
+        if flatpak_available && !kinds.contains(&PackageKind::Flatpak) {
             kinds.push(PackageKind::Flatpak);
         }
-        kinds.push(PackageKind::AppImage);
+        if !kinds.contains(&PackageKind::AppImage) {
+            kinds.push(PackageKind::AppImage);
+        }
         kinds
     }
 
@@ -443,7 +472,7 @@ pub(crate) mod linux {
         }
         match kind {
             PackageKind::Flatpak => {
-                let status = process::command("flatpak")
+                let status = process::flatpak_command()
                     .args(["install", "--user", "-y", "--noninteractive", "--bundle"])
                     .arg(f)
                     .status()
@@ -473,9 +502,16 @@ pub(crate) mod linux {
             InstallSource::Pacman => remove(&["pacman", "-R", "--noconfirm"], installed.package.as_deref().unwrap_or(app.id)),
             InstallSource::Flatpak => {
                 let id = app.bundle_id();
-                let user = process::command("flatpak").args(["uninstall", "--user", "-y", "--noninteractive", &id]).status();
+                let user = process::flatpak_command().args(["uninstall", "--user", "-y", "--noninteractive", &id]).status();
                 if user.is_ok_and(|s| s.success()) {
                     return Ok(());
+                }
+                if process::in_sandbox() {
+                    let system = process::flatpak_command().args(["uninstall", "--system", "-y", "--noninteractive", &id]).status();
+                    if system.is_ok_and(|s| s.success()) {
+                        return Ok(());
+                    }
+                    return Err(format!("couldn't uninstall {id}"));
                 }
                 remove(&["flatpak", "uninstall", "--system", "-y", "--noninteractive"], &id)
             }
@@ -993,5 +1029,35 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(choose_kinds(Some(&inst(InstallSource::AppImage)), None, &[]), [PackageKind::AppImage]);
         let _ = inst;
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn package_kinds_order_matches_launcher_format() {
+        use super::linux::order_available_kinds;
+
+        // Flatpak launcher defaults to Flatpak if available
+        let kinds = order_available_kinds(true, false, true, true, false);
+        assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
+        assert!(kinds.contains(&PackageKind::Deb));
+        assert!(kinds.contains(&PackageKind::AppImage));
+
+        // AppImage launcher defaults to AppImage
+        let kinds = order_available_kinds(false, true, true, true, false);
+        assert_eq!(kinds.first(), Some(&PackageKind::AppImage));
+        assert!(kinds.contains(&PackageKind::Deb));
+        assert!(kinds.contains(&PackageKind::Flatpak));
+
+        // Base Linux launcher defaults to native package format (deb or rpm) if available
+        let kinds = order_available_kinds(false, false, true, true, false);
+        assert_eq!(kinds.first(), Some(&PackageKind::Deb));
+
+        let kinds = order_available_kinds(false, false, true, false, true);
+        assert_eq!(kinds.first(), Some(&PackageKind::Rpm));
+
+        // Base Linux launcher without root/distro packaging falls back to Flatpak then AppImage
+        let kinds = order_available_kinds(false, false, true, false, false);
+        assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
+        assert_eq!(kinds.get(1), Some(&PackageKind::AppImage));
     }
 }
