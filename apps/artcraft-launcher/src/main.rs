@@ -41,7 +41,7 @@ fn main() -> ExitCode {
     let mut hidden = args.iter().any(|a| a == login::HIDDEN_FLAG);
 
     let wake: Wake = Arc::new(OnceLock::new());
-    let show_requests = match single_instance::claim(wake.clone()) {
+    let starts = match single_instance::claim(wake.clone()) {
         Instance::Secondary => return ExitCode::SUCCESS,
         Instance::Primary(rx) => rx,
     };
@@ -54,7 +54,7 @@ fn main() -> ExitCode {
 
     let backend_waker = waker.clone();
     let settings_path = settings_file::path(APP_ID);
-    let mut launcher = Launcher::new(Box::new(NativeBackend::new(move || backend_waker.wake())), show_requests, settings_path.clone());
+    let mut launcher = Launcher::new(Box::new(NativeBackend::new(move || backend_waker.wake())), starts, settings_path.clone());
     // Started hidden at login where a window can't hide: start in the tray without mapping one,
     // so no window flashes up. Without a tray to come back from, the window opens after all.
     let mut window = true;
@@ -335,7 +335,8 @@ struct Launcher {
     ui: LauncherUi,
     tray: Option<tray::Tray>,
     host: DesktopHost,
-    show_requests: Receiver<()>,
+    /// Requests from later starts of the launcher.
+    starts: Receiver<single_instance::Request>,
     /// Stands in for a window's context while only the tray exists. A window can't reuse it: a
     /// new window's renderer has none of the textures a used context has already handed out.
     windowless: egui::Context,
@@ -351,7 +352,7 @@ struct Launcher {
 }
 
 impl Launcher {
-    fn new(backend: Box<dyn Backend>, show_requests: Receiver<()>, settings_path: Option<PathBuf>) -> Self {
+    fn new(backend: Box<dyn Backend>, starts: Receiver<single_instance::Request>, settings_path: Option<PathBuf>) -> Self {
         let windowless = egui::Context::default();
         let (asked, run_again) = channel();
         windowless.set_request_repaint_callback(move |info| {
@@ -361,7 +362,7 @@ impl Launcher {
             ui: LauncherUi::new(&windowless, backend, Settings::default()),
             tray: None,
             host: DesktopHost { tray: false, quit: false },
-            show_requests,
+            starts,
             windowless,
             run_again,
             started: false,
@@ -409,7 +410,11 @@ impl Launcher {
     fn tick(&mut self, ctx: &egui::Context) -> Vec<Request> {
         self.ui.logic(ctx, &mut self.host);
         let mut requests = Vec::new();
-        if self.show_requests.try_iter().count() > 0 {
+        let starts: Vec<single_instance::Request> = self.starts.try_iter().collect();
+        if starts.contains(&single_instance::Request::Replace) && !self.ui.busy() {
+            // A newer launcher is starting and takes over once this one has quit.
+            requests.push(Request::Quit);
+        } else if !starts.is_empty() {
             requests.push(Request::Show);
         }
         let actions = self.tray.as_ref().map(tray::Tray::actions).unwrap_or_default();
@@ -643,7 +648,7 @@ mod tests {
     }
 
     /// A launcher with no tray and no window, the sender of its show requests, and its backend's record.
-    fn launcher() -> (Launcher, Sender<()>, Arc<Seen>) {
+    fn launcher() -> (Launcher, Sender<single_instance::Request>, Arc<Seen>) {
         let seen = Arc::new(Seen { clock: AtomicI64::new(NOW), ..Seen::default() });
         let (show, show_requests) = channel();
         (Launcher::new(Box::new(Quiet(seen.clone())), show_requests, None), show, seen)
@@ -715,7 +720,7 @@ mod tests {
     fn with_no_window_a_show_request_opens_one() {
         let (mut launcher, show, _) = launcher();
         let (_wake, woken) = sync_channel(1);
-        assert!(show.send(()).is_ok());
+        assert!(show.send(single_instance::Request::Show).is_ok());
         assert!(launcher.wait_in_tray(&woken));
     }
 
@@ -723,7 +728,7 @@ mod tests {
     fn with_no_window_quit_wins_over_a_show_request() {
         let (mut launcher, show, _) = launcher();
         let (_wake, woken) = sync_channel(1);
-        assert!(show.send(()).is_ok());
+        assert!(show.send(single_instance::Request::Show).is_ok());
         launcher.host.quit();
         assert!(!launcher.wait_in_tray(&woken));
     }
@@ -737,7 +742,7 @@ mod tests {
         let pause = Duration::from_millis(200);
         let waking = std::thread::spawn(move || {
             std::thread::sleep(pause);
-            let _ = show.send(());
+            let _ = show.send(single_instance::Request::Show);
             let _ = wake.try_send(());
         });
         let started = Instant::now();

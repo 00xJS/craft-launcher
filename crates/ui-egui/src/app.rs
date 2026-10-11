@@ -173,6 +173,12 @@ impl LauncherUi {
         self.entries.iter().filter(|e| e.status(self.platform, self.caps.manage_apps) == AppStatus::UpdateAvailable).count()
     }
 
+    /// Something is downloading or installing, the launcher's own update included: quitting now
+    /// would cut it short.
+    pub fn busy(&self) -> bool {
+        self.launcher_job.is_some() || self.entries.iter().any(|e| e.job.is_some())
+    }
+
     /// Looks for updates now (the tray's "Check for Updates").
     pub fn check_now(&mut self) {
         self.auto_update_attempted.clear();
