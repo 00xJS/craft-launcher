@@ -295,7 +295,8 @@ impl NativeBackend {
             let at = crate::now();
             *shared.last_check.lock().unwrap_or_else(PoisonError::into_inner) = Some(at);
             shared.checking.store(false, Ordering::SeqCst);
-            shared.emit(Event::CheckFinished { at, source: source_used, rate_limited_until: source.rate_limited_until() });
+            let rate_limited_until = limit_notice(source_used, source.rate_limited_until());
+            shared.emit(Event::CheckFinished { at, source: source_used, rate_limited_until });
         });
     }
 
@@ -690,6 +691,13 @@ fn latest_for(
     }
 }
 
+/// Until when the footer says GitHub's limit holds details back: only while it does, that is
+/// when this check had to settle for the release pages or saved answers. When the feed (or the
+/// API itself) answered everything, nothing is missing, however recently GitHub said no.
+fn limit_notice(source_used: Source, limited_until: Option<i64>) -> Option<i64> {
+    limited_until.filter(|_| matches!(source_used, Source::GitHubPages | Source::Cache))
+}
+
 /// The repo to ask GitHub about, following the feed's repo renames.
 fn feed_repo(feed: Option<&Feed>, app: &CraftApp) -> String {
     feed.map_or_else(|| app.repo.to_string(), |f| f.repo_for(app))
@@ -1003,6 +1011,18 @@ mod tests {
         }}}"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn the_limit_notice_shows_only_while_details_are_missing() {
+        let until = Some(NOW + 31 * 60);
+        // GitHub said no earlier, but the feed has since answered every app: nothing to warn about.
+        assert_eq!(limit_notice(Source::Feed, until), None);
+        assert_eq!(limit_notice(Source::GitHubApi, until), None);
+        // Some apps came from the release pages or saved answers: say when the rest returns.
+        assert_eq!(limit_notice(Source::GitHubPages, until), until);
+        assert_eq!(limit_notice(Source::Cache, until), until);
+        assert_eq!(limit_notice(Source::Cache, None), None);
     }
 
     #[test]
