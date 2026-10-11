@@ -58,6 +58,9 @@ settings file must produce an error the user can act on, never a panic. Shared s
 ### Installing other people's software safely
 
 - Download only from `https://github.com/storytold/<app>/releases` (and GitHub's asset CDN).
+  The one exception is a developer's own loopback mirror (`ARTCRAFT_LAUNCHER_DOWNLOAD_BASE`,
+  `cargo xtask local`); keep it loopback-only and behind the `local-mirror` cargo feature, which
+  release builds never enable.
 - Verify each download against the release's `SHA256SUMS.txt` before running or installing it.
 - Never run an installer with elevated rights silently; tell the user what is about to happen.
 - Never delete a user's files outside what the launcher itself installed.
