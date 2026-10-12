@@ -290,6 +290,24 @@ fn german_counts_dates_and_messages_work() {
 }
 
 #[test]
+fn hungarian_locales_and_plurals_work() {
+    for tag in ["hu", "hu-HU", "hu_HU.UTF-8", "HU_hu"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::HU), "{tag}");
+    }
+    assert_eq!(super::detect::first_supported(["xx-XX", "hu-HU", "en-US"]), Some(Lang::HU));
+    // After a number the noun stays singular; 1 is still the "one" form.
+    assert_eq!(trn(Lang::HU, 0, "{n} app", "{n} apps"), "0 alkalmazás");
+    assert_eq!(trn(Lang::HU, 1, "{n} app", "{n} apps"), "1 alkalmazás");
+    assert_eq!(trn(Lang::HU, 2, "{n} app", "{n} apps"), "2 alkalmazás");
+    assert_eq!(trn(Lang::HU, 21, "{n} day ago", "{n} days ago"), "21 napja");
+    assert_eq!(trn(Lang::HU, 1, "{n} day ago", "{n} days ago"), "1 napja");
+    assert_eq!(super::tr_ctx(Lang::HU, "month", "Mar"), "márc.");
+    assert_eq!(tr(Lang::HU, "{month} {day}, {year}"), "{year}. {month} {day}.");
+    assert_eq!(message(Lang::HU, "PhotoCraft updated to 0.5.0"), "PhotoCraft frissítve. Verzió: 0.5.0");
+    assert_eq!(tr(Lang::HU, "Untranslated diagnostic"), "Untranslated diagnostic");
+}
+
+#[test]
 fn french_locales_and_plurals_work() {
     for tag in ["fr", "fr-FR", "fr_CA.UTF-8", "fr-BE", "FR_ch"] {
         assert_eq!(lang_from_tag(tag), Some(Lang::FR), "{tag}");

@@ -300,6 +300,12 @@ pub enum Kind {
     Danger,
 }
 
+/// The natural width of a button, including its horizontal padding.
+pub fn button_width(ui: &Ui, text: &str, minimum: f32) -> f32 {
+    let galley = caps(ui, text, theme::HUD_SIZE, theme::mono_bold(), theme::BUTTON_SPACING, Tokens::get(ui.ctx()).ink);
+    (galley.size().x + 32.0).max(minimum)
+}
+
 /// A square button with a mono upper-case label, at least `width` wide.
 pub fn button(ui: &mut Ui, text: &str, kind: Kind, width: f32) -> Response {
     let t = Tokens::get(ui.ctx());
