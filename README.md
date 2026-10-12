@@ -119,6 +119,12 @@ package or portable folder, the AppImage, or the `.deb`/`.rpm`) and reopens it.
 Updates use the same format an app was installed with. Every download is checked against the
 release's published SHA-256 before it is installed, and a running app is never replaced.
 
+The launcher writes its log to `logs/artcraft-launcher.log` in its data folder
+(`~/.local/share/artcraft-launcher` on Linux, `~/Library/Application Support/ArtCraft Launcher`
+on macOS, `%LOCALAPPDATA%\ArtCraft Launcher` on Windows, `ArtCraftLauncherData` beside the
+portable zip's executable) and keeps the previous two runs as `artcraft-launcher.1.log` and
+`artcraft-launcher.2.log`. `RUST_LOG` changes what it records (`debug`, `info,zbus=warn`, …).
+
 ## Downloads
 
 Download the build for your computer from the [latest release](https://github.com/storytold/craft-launcher/releases/latest), or browse [all releases](https://github.com/storytold/craft-launcher/releases). Every release has a `SHA256SUMS.txt` to check the files against. `<ver>` is the version number, for example `0.1.0`.
@@ -213,7 +219,7 @@ New contributors and AI agents: start with [`AGENTS.md`](AGENTS.md). Release pac
 
 > [!IMPORTANT]
 > **Status:** ArtCraft Launcher is new and in early alpha. Expect rough edges, and please file
-> issues (include your OS and which app you were installing) or tell us on
+> issues (include your OS, which app you were installing and the launcher's log file) or tell us on
 > [Discord](https://discord.gg/artcraft).
 
 ## The Craft App Suite

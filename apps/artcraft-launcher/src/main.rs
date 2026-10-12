@@ -5,6 +5,7 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod logging;
 mod settings_file;
 #[cfg(target_os = "macos")]
 mod spaces;
@@ -30,7 +31,9 @@ const SETTINGS_KEY: &str = "settings";
 type Wake = Arc<OnceLock<Box<dyn Fn() + Send + Sync>>>;
 
 fn main() -> ExitCode {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // First, so the panic report and every start-up warning are recorded (`logging`).
+    let logs = logging::install();
+    logging::install_panic_hook();
     // Detect system language in the background so the first frame can use it.
     artcraft_launcher_ui_egui::i18n::detect_system_lang_in_background();
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,6 +48,25 @@ fn main() -> ExitCode {
         Instance::Secondary => return ExitCode::SUCCESS,
         Instance::Primary(rx) => rx,
     };
+    // The log file lives in the launcher's data folder (beside the executable in portable mode);
+    // opened after the arguments (so `--version` leaves no file behind) and once this is the only
+    // launcher running, so a second start doesn't rotate away the running one's log. Records
+    // logged until now are written to it first.
+    if let Some(logs) = logs {
+        match artcraft_launcher_native::paths::Paths::new() {
+            Ok(paths) => match logs.attach_dir(&paths.logs()) {
+                Ok(path) => log::info!("ArtCraft Launcher {}, log file {}", env!("CARGO_PKG_VERSION"), path.display()),
+                Err(e) => {
+                    logs.no_file();
+                    log::warn!("no log file: {e}");
+                }
+            },
+            Err(e) => {
+                logs.no_file();
+                log::warn!("no log file: {e}");
+            }
+        }
+    }
     let (tray_loop, woken) = sync_channel(1);
     let waker = Arc::new(Waker { window: Mutex::new(None), tray_loop, quit_pending: AtomicBool::new(false) });
     {

@@ -50,6 +50,11 @@ impl Paths {
         self.data.join("installed.json")
     }
 
+    /// The launcher's own log files (`artcraft-launcher.log` and the previous runs').
+    pub fn logs(&self) -> PathBuf {
+        self.data.join("logs")
+    }
+
     /// Where tarball installs (FreeBSD, Linux without AppImage) are unpacked: `<data>/apps/<app>`.
     pub fn apps(&self) -> PathBuf {
         self.data.join("apps")
