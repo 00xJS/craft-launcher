@@ -231,15 +231,7 @@ impl LauncherUi {
                         .selected_text(RichText::new(sort_label(self.settings.sort)).size(13.0))
                         .width(140.0)
                         .show_ui(ui, |ui| {
-                            for key in [
-                                SortKey::Suite,
-                                SortKey::Name,
-                                SortKey::InspiredBy,
-                                SortKey::Status,
-                                SortKey::Installed,
-                                SortKey::Latest,
-                                SortKey::Released,
-                            ] {
+                            for key in [SortKey::Suite, SortKey::Name, SortKey::Status, SortKey::Installed, SortKey::Latest, SortKey::Released] {
                                 if ui.selectable_label(self.settings.sort == key, sort_label(key)).clicked() {
                                     self.settings.sort = key;
                                     self.settings.sort_descending = key.starts_descending();
@@ -425,10 +417,10 @@ impl LauncherUi {
         let ui = &mut child;
         ui.horizontal(|ui| {
             const ICON: f32 = 56.0;
-            let [name, tagline, like] = [FontId::new(22.0, theme::display()), FontId::proportional(13.5), FontId::proportional(12.0)];
+            let [name, tagline] = [FontId::new(22.0, theme::display()), FontId::proportional(13.5)];
             const GAP: f32 = 4.0;
             // The slot is as tall as the text beside it when that is taller, so the two share a centre.
-            let block = lines_height(ui, &[&name, &tagline, &like], GAP);
+            let block = lines_height(ui, &[&name, &tagline], GAP);
             let (slot, icon_response) = ui.allocate_exact_size(vec2(ICON, block.max(ICON)), Sense::hover());
             icon_response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Image, true, fmt(tl!("{name} icon"), &[("name", app.name)])));
             // The icon rises a little on hover, over a soft drop shadow (the site's only shadow).
@@ -441,7 +433,7 @@ impl LauncherUi {
                 egui::Image::new(icon).paint_at(ui, icon_rect);
             }
             ui.add_space(6.0);
-            centered_lines(ui, &[&name, &tagline, &like], GAP, |ui| {
+            centered_lines(ui, &[&name, &tagline], GAP, |ui| {
                 // The name's row is as tall as its text, not as a button.
                 ui.spacing_mut().interact_size.y = 0.0;
                 ui.horizontal(|ui| {
@@ -451,10 +443,6 @@ impl LauncherUi {
                     }
                 });
                 ui.add(egui::Label::new(RichText::new(tr_ctx(current(), app.id, app.tagline)).font(tagline.clone()).color(t.muted)).truncate());
-                ui.add(
-                    egui::Label::new(RichText::new(fmt(tl!("Like {name}"), &[("name", &app.inspired_by())])).font(like.clone()).color(t.faint))
-                        .truncate(),
-                );
             });
         });
         ui.add_space(14.0);
@@ -499,7 +487,6 @@ impl LauncherUi {
                 .vscroll(false)
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::remainder().at_least(220.0).clip(true))
-                .column(Column::exact(172.0).clip(true))
                 .column(Column::exact(176.0))
                 .column(Column::exact(84.0))
                 .column(Column::exact(84.0))
@@ -508,7 +495,6 @@ impl LauncherUi {
                 .header(42.0, |mut header| {
                     for (key, label) in [
                         (Some(SortKey::Name), tl!("App")),
-                        (Some(SortKey::InspiredBy), tl!("Inspired by")),
                         (Some(SortKey::Status), tl!("Status")),
                         (Some(SortKey::Installed), tr_ctx(current(), "column", "Installed")),
                         (Some(SortKey::Latest), tr_ctx(current(), "column", "Latest")),
@@ -583,9 +569,6 @@ impl LauncherUi {
                                 });
                             });
                             row.col(|ui| {
-                                ui.add(egui::Label::new(RichText::new(entry.app.inspired_by()).size(13.0).color(t.muted)).truncate());
-                            });
-                            row.col(|ui| {
                                 let (text, tone) = model::entry_status_text(&entry, &status, self.caps.manage_apps);
                                 let r = widgets::badge(ui, &text, widgets::tone_color(&t, tone));
                                 if let Some(f) = entry.failure() {
@@ -623,13 +606,6 @@ impl LauncherUi {
                 self.settings.sort_descending = k.starts_descending();
             }
         }
-    }
-
-    /// The trademark notice under the grid and the table.
-    pub(crate) fn trademark_notice(&self, ui: &mut Ui) {
-        let t = Tokens::get(ui.ctx());
-        ui.add_space(8.0);
-        ui.add(egui::Label::new(RichText::new(artcraft_launcher_core::catalog::TRADEMARK_NOTICE).size(11.0).color(t.faint)).wrap());
     }
 
     // ---- actions -------------------------------------------------------------------------
@@ -861,7 +837,6 @@ fn sort_label(k: SortKey) -> &'static str {
     match k {
         SortKey::Suite => tl!("Suite order"),
         SortKey::Name => tl!("Name"),
-        SortKey::InspiredBy => tl!("Inspired by"),
         SortKey::Status => tl!("Status"),
         SortKey::Installed => tl!("Installed version"),
         SortKey::Latest => tl!("Latest version"),
