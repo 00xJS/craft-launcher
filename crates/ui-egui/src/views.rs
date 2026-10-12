@@ -80,11 +80,6 @@ impl LauncherUi {
             let logo = vec2(14.0 * crate::icons::ARTCRAFT_LOGO_ASPECT, 14.0);
             let (cell, _) = ui.allocate_exact_size(vec2(logo.x + 40.0, h), Sense::hover());
             egui::Image::new(crate::icons::artcraft_logo(t.dark)).alt_text(tl!("ArtCraft")).paint_at(ui, Rect::from_center_size(cell.center(), logo));
-            widgets::rule(ui, h);
-            ui.add_space(16.0);
-            widgets::tag(ui, tl!("Launcher"), t.invert_bg, t.invert_fg);
-            ui.add_space(12.0);
-            widgets::hud(ui, tl!("Craft App Suite"), t.muted);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if bar == TitleBar::Custom {
                     widgets::window_buttons(ui, h);
@@ -112,6 +107,20 @@ impl LauncherUi {
                 }
                 ui.add_space(6.0);
                 widgets::rule(ui, h);
+                // The controls reserve their actual widths before the secondary text gets space.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let tag_width =
+                        widgets::caps(ui, tl!("Launcher"), theme::HUD_SIZE, theme::mono_bold(), theme::HUD_SPACING, t.ink).size().x + 16.0;
+                    if ui.available_width() >= 17.0 + tag_width {
+                        widgets::rule(ui, h);
+                        ui.add_space(16.0);
+                        widgets::tag(ui, tl!("Launcher"), t.invert_bg, t.invert_fg);
+                    }
+                    if ui.available_width() >= 12.0 + widgets::hud_galley(ui, tl!("Craft App Suite"), t.muted).size().x {
+                        ui.add_space(12.0);
+                        widgets::hud(ui, tl!("Craft App Suite"), t.muted);
+                    }
+                });
             });
         });
     }

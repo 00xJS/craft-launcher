@@ -123,6 +123,23 @@ fn harness_with(
     manage: bool,
     scale: f32,
 ) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
+    harness_with_title_bar(events, view, theme, manage, scale, artcraft_launcher_ui_egui::TitleBar::Native)
+}
+
+fn harness_with_title_bar(
+    events: Vec<Event>,
+    view: ViewMode,
+    theme: egui::Theme,
+    manage: bool,
+    scale: f32,
+    bar: artcraft_launcher_ui_egui::TitleBar,
+) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
+    struct HeaderHost(artcraft_launcher_ui_egui::TitleBar);
+    impl Host for HeaderHost {
+        fn title_bar(&self) -> artcraft_launcher_ui_egui::TitleBar {
+            self.0
+        }
+    }
     // Integration tests compile without cfg!(test), so system_lang() picks up the
     // developer's locale. Force English so labels match the assertions.
     artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
@@ -146,8 +163,8 @@ fn harness_with(
                 *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), s));
             }
             if let Some(l) = state.as_mut() {
-                l.logic(&ui.ctx().clone(), &mut NoHost);
-                l.ui(ui, &mut NoHost);
+                l.logic(&ui.ctx().clone(), &mut HeaderHost(bar));
+                l.ui(ui, &mut HeaderHost(bar));
             }
         },
         None,
@@ -930,6 +947,45 @@ fn the_rate_limit_notice_never_runs_under_the_footer_links() {
         for r in right {
             assert!(!r.intersects(notice), "{width}: notice {notice:?} overlaps {r:?}");
             assert!(!r.intersects(checked), "{width}: check time {checked:?} overlaps {r:?}");
+        }
+    }
+}
+
+#[test]
+fn narrow_header_keeps_the_view_switch_clear_of_brand_text() {
+    use artcraft_launcher_ui_egui::TitleBar;
+    for theme in [egui::Theme::Dark, egui::Theme::Light] {
+        for bar in [TitleBar::Native, TitleBar::MacOs, TitleBar::Custom] {
+            let (mut h, _) = harness_with_title_bar(events(), ViewMode::Grid, theme, true, 1.0, bar);
+            for width in (720..=1180).step_by(10).chain([720, 1180]).map(|w| w as f32) {
+                h.set_size(egui::vec2(width, 900.0));
+                h.run_steps(6);
+                for label in ["Grid", "Table", "Settings", "Check for updates"] {
+                    let rect = h.get_by_label(label).rect();
+                    assert!(rect.left() >= 0.0 && rect.right() <= width, "{bar:?} {width}: {label} {rect:?}");
+                    for label in ["Launcher", "Craft App Suite"] {
+                        if let Some(text) = h.query_by_label(label) {
+                            assert!(!rect.intersects(text.rect()), "{bar:?} {width}: {label} overlaps {rect:?}");
+                        }
+                    }
+                }
+                if bar == TitleBar::Custom {
+                    for label in ["Minimize", "Maximize", "Close"] {
+                        let rect = h.get_by_label(label).rect();
+                        assert!(rect.left() >= 0.0 && rect.right() <= width, "{width}: {label} {rect:?}");
+                    }
+                }
+                if width == 1180.0 {
+                    h.get_by_label("Launcher");
+                    h.get_by_label("Craft App Suite");
+                }
+                if [720.0, 800.0, 1180.0].contains(&width) {
+                    snapshot(&mut h, &format!("header-{theme:?}-{bar:?}-{width}"));
+                }
+            }
+            h.get_by_label("Table").click();
+            h.run_steps(2);
+            assert_eq!(h.state().as_ref().unwrap().settings.view, ViewMode::Table);
         }
     }
 }
