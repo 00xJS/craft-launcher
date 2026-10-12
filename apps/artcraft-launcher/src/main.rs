@@ -148,11 +148,12 @@ fn native_options(hidden: bool) -> eframe::NativeOptions {
 /// integrated and discrete GPUs run different driver packages (common on OEM machines, where the
 /// Adrenalin installer leaves the integrated GPU on the OEM driver) it crashes inside
 /// `amdvlk64.dll` before the first frame. `WGPU_BACKEND` still overrides the default, and then
-/// wgpu picks the adapter itself.
+/// wgpu picks the adapter itself. Direct3D 12 shaders compile with FXC ([`pin_dx12_compiler`]).
 #[cfg(windows)]
 fn wgpu_options() -> eframe::WgpuConfiguration {
-    use eframe::wgpu::{Backends, PowerPreference};
+    use eframe::wgpu::{Backends, Dx12Compiler, PowerPreference};
     let mut config = eframe::WgpuConfiguration::default();
+    pin_dx12_compiler(&mut config, Dx12Compiler::from_env());
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
         if let Some(backends) = Backends::from_env() {
             setup.instance_descriptor.backends = backends;
@@ -173,6 +174,19 @@ fn wgpu_options() -> eframe::WgpuConfiguration {
         }
     }
     config
+}
+
+/// Compiles Direct3D 12 shaders with FXC (`d3dcompiler_47.dll`, part of Windows) unless
+/// `env_choice` (normally `Dx12Compiler::from_env()`, i.e. `WGPU_DX12_COMPILER`) names another.
+/// wgpu's default (`Auto`) loads whichever `dxcompiler.dll` the DLL search path finds. The launcher
+/// ships none, and without a matching `dxil.dll` DXC warns that the DXIL is unsigned; wgpu takes
+/// the warning for a compile error, its indirect-validation pipeline fails, the device is lost
+/// and the launcher exits before the first frame (#126).
+#[cfg(any(windows, test))]
+fn pin_dx12_compiler(config: &mut eframe::WgpuConfiguration, env_choice: Option<eframe::wgpu::Dx12Compiler>) {
+    if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+        setup.instance_descriptor.backend_options.dx12.shader_compiler = env_choice.unwrap_or(eframe::wgpu::Dx12Compiler::Fxc);
+    }
 }
 
 /// wgpu's own adapter order (by device type, then enumeration order), except that any Direct3D 12
@@ -894,6 +908,27 @@ mod tests {
         shell.put_away(&ctx);
         assert!(!shell.visible);
         assert!(!shell.launcher.closed_to_tray);
+    }
+
+    #[test]
+    fn dx12_shaders_compile_with_fxc_unless_asked() {
+        use eframe::egui_wgpu::WgpuSetup;
+        use eframe::wgpu::Dx12Compiler;
+        fn compiler(env_choice: Option<Dx12Compiler>) -> Dx12Compiler {
+            let mut config = eframe::WgpuConfiguration::default();
+            if let WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+                // wgpu's default: whichever dxcompiler.dll the DLL search path finds (#126).
+                setup.instance_descriptor.backend_options.dx12.shader_compiler = Dx12Compiler::Auto;
+            }
+            pin_dx12_compiler(&mut config, env_choice);
+            match config.wgpu_setup {
+                WgpuSetup::CreateNew(setup) => setup.instance_descriptor.backend_options.dx12.shader_compiler,
+                WgpuSetup::Existing(_) => panic!("the default configuration creates its own instance"),
+            }
+        }
+        assert!(matches!(compiler(None), Dx12Compiler::Fxc));
+        assert!(matches!(compiler(Some(Dx12Compiler::Auto)), Dx12Compiler::Auto));
+        assert!(matches!(compiler(Some(Dx12Compiler::default_dynamic_dxc())), Dx12Compiler::DynamicDxc { .. }));
     }
 
     #[test]
