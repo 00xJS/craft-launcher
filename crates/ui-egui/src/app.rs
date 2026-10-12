@@ -11,6 +11,7 @@ use artcraft_launcher_core::{Platform, SUITE};
 
 use crate::i18n::set_current;
 use crate::model::AppEntry;
+use crate::motion;
 use crate::settings::{Filter, Settings, SortKey, ViewMode};
 use crate::theme::{self, Tokens};
 
@@ -51,6 +52,11 @@ pub trait Host {
     }
     fn set_login_item(&mut self, _on: bool) -> Result<(), String> {
         Err("not supported here".into())
+    }
+    /// The OS asks for fewer animations (Windows' "Animation effects" switched off, macOS'
+    /// "Reduce motion"). Asked about once a second while the window draws, so it must be quick.
+    fn reduce_motion(&self) -> bool {
+        false
     }
     /// Quit the launcher for real (not just hide to the tray).
     fn quit(&mut self) {}
@@ -106,6 +112,12 @@ pub struct LauncherUi {
     pub(crate) dialog: Option<Dialog>,
     started: bool,
     applied_theme: Option<theme::ThemeChoice>,
+    /// The OS asks for fewer animations: what the host last said, and the context's time to ask
+    /// it again at.
+    pub(crate) reduce_motion: bool,
+    motion_recheck: f64,
+    /// What the context's styles were last set for.
+    applied_motion: Option<bool>,
     /// Fonts registered with `set_fonts` only exist from the next frame on; drawing with the named
     /// weights before then would abort.
     fonts_ready: bool,
@@ -163,6 +175,9 @@ impl LauncherUi {
             dialog: None,
             started: false,
             applied_theme: None,
+            reduce_motion: false,
+            motion_recheck: 0.0,
+            applied_motion: None,
             fonts_ready: false,
             cjk_font,
             sent_options: None,
@@ -172,14 +187,25 @@ impl LauncherUi {
         }
     }
 
-    /// Moves the UI to another window's context: fonts, image loaders and the theme belong to a
-    /// context, and toasts are timed on its clock.
+    /// Moves the UI to another window's context: fonts, image loaders, the theme and the animation
+    /// timings belong to a context, and toasts and the next look at the OS's animation setting are
+    /// timed on its clock.
     pub fn attach(&mut self, ctx: &egui::Context) {
         theme::install_fonts(ctx, self.cjk_font);
         egui_extras::install_image_loaders(ctx);
         self.fonts_ready = false;
         self.applied_theme = None;
+        self.applied_motion = None;
+        self.motion_recheck = 0.0;
         self.toasts.clear();
+    }
+
+    /// Input on its way to egui (the shell's `raw_input_hook`): with fewer animations asked for,
+    /// a mouse wheel scrolls at once instead of gliding.
+    pub fn raw_input(&self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if self.reduce_motion {
+            motion::unsmooth_wheel(ctx, raw);
+        }
     }
 
     /// Installed apps with an update waiting (the tray shows the count). Hidden apps are left out,
@@ -460,6 +486,15 @@ impl LauncherUi {
         if self.applied_theme != Some(self.settings.theme) {
             theme::apply(&ctx, self.settings.theme);
             self.applied_theme = Some(self.settings.theme);
+        }
+        let now = ctx.input(|i| i.time);
+        if now >= self.motion_recheck {
+            self.reduce_motion = host.reduce_motion();
+            self.motion_recheck = now + motion::RECHECK_EVERY;
+        }
+        if self.applied_motion != Some(self.reduce_motion) {
+            motion::apply(&ctx, self.reduce_motion);
+            self.applied_motion = Some(self.reduce_motion);
         }
         let tokens = Tokens::get(&ctx);
         if self.entries.iter().any(|e| e.job.is_some()) || self.checking {

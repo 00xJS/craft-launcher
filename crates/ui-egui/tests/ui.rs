@@ -1018,3 +1018,134 @@ fn narrow_header_keeps_the_view_switch_clear_of_brand_text() {
         }
     }
 }
+
+/// A shell on an OS whose animation setting the test switches.
+struct OsMotion(Rc<Cell<bool>>);
+
+impl Host for OsMotion {
+    fn reduce_motion(&self) -> bool {
+        self.0.get()
+    }
+}
+
+/// The grid in a window too short for it, at 60 frames a second, on an OS asking for fewer
+/// animations (`reduce`) or not. Nothing is downloading, so the window is still unless something
+/// animates.
+fn short_window(reduce: Rc<Cell<bool>>) -> Harness<'static, Option<LauncherUi>> {
+    artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
+    let events = events().into_iter().filter(|e| !matches!(e, Event::Progress { .. })).collect();
+    let mut backend = Some(Fake { events, sent: Rc::default(), manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut host = OsMotion(reduce);
+    let mut h = Harness::builder().with_size(egui::vec2(1180.0, 500.0)).with_step_dt(1.0 / 60.0).with_max_steps(120).build_ui_state(
+        move |ui, state: &mut Option<LauncherUi>| {
+            if state.is_none()
+                && let Some(b) = backend.take()
+            {
+                let settings = Settings { view: ViewMode::Grid, notify: false, ..Settings::default() };
+                *state = Some(LauncherUi::new(ui.ctx(), Box::new(b), settings));
+            }
+            if let Some(l) = state.as_mut() {
+                l.logic(&ui.ctx().clone(), &mut host);
+                l.ui(ui, &mut host);
+            }
+        },
+        None,
+    );
+    h.run_steps(8);
+    h
+}
+
+/// How far down the window the grid's first card is.
+fn grid_top(h: &Harness<'_, Option<LauncherUi>>) -> f32 {
+    h.get_by_label("Image editing").rect().top()
+}
+
+/// Turns the mouse wheel `lines` down over the grid, by way of the shell's `raw_input_hook`. The
+/// next frame takes it in.
+fn turn_wheel(h: &mut Harness<'_, Option<LauncherUi>>, lines: f32) {
+    h.hover_at(egui::pos2(590.0, 300.0));
+    h.run_steps(2);
+    let wheel = egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Line,
+        delta: egui::vec2(0.0, -lines),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    };
+    let mut raw = egui::RawInput { events: vec![wheel], ..Default::default() };
+    if let Some(l) = h.state() {
+        l.raw_input(&h.ctx, &mut raw);
+    }
+    for event in raw.events {
+        h.event(event);
+    }
+}
+
+#[test]
+fn the_os_animation_setting_is_followed_as_it_changes() {
+    let reduce = Rc::new(Cell::new(true));
+    let mut h = short_window(reduce.clone());
+    assert_eq!(h.ctx.global_style().animation_time, 0.0);
+    // Switched back on while the launcher runs: noticed within a couple of seconds.
+    reduce.set(false);
+    h.run_steps(150);
+    assert_eq!(h.ctx.global_style().animation_time, egui::Style::default().animation_time);
+    reduce.set(true);
+    h.run_steps(150);
+    assert_eq!(h.ctx.global_style().animation_time, 0.0);
+}
+
+#[test]
+fn with_animations_off_the_wheel_scrolls_at_once() {
+    let mut h = short_window(Rc::new(Cell::new(true)));
+    let notch = 3.0 * h.ctx.options(|o| o.input_options.line_scroll_speed);
+    let start = grid_top(&h);
+    turn_wheel(&mut h, 3.0);
+    // The frame the wheel turned in, and the one that draws where it scrolled to.
+    h.run_steps(2);
+    let moved = start - grid_top(&h);
+    assert!((moved - notch).abs() < 0.5, "moved {moved} of {notch}");
+    // Nothing is left to glide.
+    h.run_steps(30);
+    assert_eq!(start - grid_top(&h), moved);
+}
+
+#[test]
+fn with_animations_on_the_wheel_glides() {
+    let mut h = short_window(Rc::new(Cell::new(false)));
+    let notch = 3.0 * h.ctx.options(|o| o.input_options.line_scroll_speed);
+    let start = grid_top(&h);
+    turn_wheel(&mut h, 3.0);
+    h.run_steps(2);
+    let moved = start - grid_top(&h);
+    assert!(moved > 0.0 && moved < notch / 2.0, "moved {moved} of {notch}");
+    // And is there within the second.
+    h.run_steps(60);
+    let moved = start - grid_top(&h);
+    assert!((moved - notch).abs() < 0.5, "moved {moved} of {notch}");
+}
+
+/// Moves the pointer from one card to the next. Returns how many frames are drawn before the
+/// window is still again.
+fn frames_to_hover_the_next_card(h: &mut Harness<'_, Option<LauncherUi>>) -> u64 {
+    let cards: Vec<egui::Pos2> = ["Image editing", "Vector illustration"].map(|t| h.get_by_label(t).rect().center()).to_vec();
+    // Still to begin with: the icons are in, the first card is lit and the scroll bar is showing.
+    h.hover_at(cards[0]);
+    h.run();
+    h.hover_at(cards[1]);
+    h.run()
+}
+
+#[test]
+fn with_animations_off_hovering_a_card_shows_at_once() {
+    let mut h = short_window(Rc::new(Cell::new(true)));
+    let frames = frames_to_hover_the_next_card(&mut h);
+    assert!(frames <= 5, "{frames} frames");
+}
+
+#[test]
+fn with_animations_on_hovering_a_card_animates() {
+    let mut h = short_window(Rc::new(Cell::new(false)));
+    // The rule wipes in and the icon rises over 0.3 s, at 60 frames a second.
+    let frames = frames_to_hover_the_next_card(&mut h);
+    assert!(frames >= 10, "{frames} frames");
+}

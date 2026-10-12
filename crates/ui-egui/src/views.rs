@@ -394,7 +394,8 @@ impl LauncherUi {
         let t = Tokens::get(ui.ctx());
         let app = entry.app;
         let hovered = ui.rect_contains_pointer(rect);
-        let lift = ui.ctx().animate_bool_with_time(ui.id().with(("card-hover", id)), hovered, 0.3);
+        let wipe = if self.reduce_motion { 0.0 } else { 0.3 };
+        let lift = ui.ctx().animate_bool_with_time(ui.id().with(("card-hover", id)), hovered, wipe);
         let app_color = rgb(app.color);
         let painter = ui.painter_at(rect.expand(16.0));
         painter.rect(rect, CornerRadius::ZERO, t.bg, t.hairline(), egui::StrokeKind::Inside);

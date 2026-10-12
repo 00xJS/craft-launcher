@@ -95,8 +95,14 @@ pub fn start() {
     });
 }
 
-struct NoHost;
-impl Host for NoHost {}
+/// The browser: nothing of the desktop's, but it knows whether the visitor asked for fewer animations.
+struct WebHost;
+
+impl Host for WebHost {
+    fn reduce_motion(&self) -> bool {
+        web_sys::window().and_then(|w| w.match_media("(prefers-reduced-motion: reduce)").ok().flatten()).is_some_and(|query| query.matches())
+    }
+}
 
 struct WebApp {
     ui: LauncherUi,
@@ -104,11 +110,15 @@ struct WebApp {
 
 impl eframe::App for WebApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.ui.logic(ctx, &mut NoHost);
+        self.ui.logic(ctx, &mut WebHost);
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        self.ui.ui(ui, &mut NoHost);
+        self.ui.ui(ui, &mut WebHost);
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.ui.raw_input(ctx, raw_input);
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

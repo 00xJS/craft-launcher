@@ -72,6 +72,12 @@ hard square corners, 1 px hairlines instead of shadows, Archivo (620, 118 % widt
 and app names, Inter for body text, upper-case Geist Mono labels and buttons, and the site's
 colour tokens by name (`theme::Tokens`). Build new UI from `widgets.rs`; never hard-code a colour.
 
+Animations follow the OS: with Windows' "Animation effects" off, macOS' "Reduce motion" on, a Linux
+desktop's animations off or a browser's `prefers-reduced-motion`, nothing fades, wipes or glides
+(`Host::reduce_motion`, `crates/ui-egui/src/motion.rs`). Time a new animation with egui's
+`style.animation_time`, or switch it off on `LauncherUi::reduce_motion`. Progress bars and
+spinners keep moving.
+
 ### Languages
 
 Every user-facing string goes through `crates/ui-egui/src/i18n` (`tl!("…")` for literals, `fmt`
