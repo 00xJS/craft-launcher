@@ -5,7 +5,9 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::OnceLock;
 
+use artcraft_launcher_core::details::AppDetails;
 use artcraft_launcher_core::protocol::{
     Backend, CANCELLED, Capabilities, Command, Event, INSTALL_CANCELLED, JobPhase, LatestRelease, Origin, PausedDownload, Source,
 };
@@ -19,19 +21,66 @@ use egui_kittest::kittest::{NodeT, Queryable};
 
 const NOW: i64 = 1_791_500_000;
 
+/// How the fake backend answers a request for an app's details pictures, whenever it is polled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pictures {
+    /// Every picture arrives.
+    #[default]
+    Online,
+    /// Every picture fails, as with no connection.
+    Offline,
+    /// Nothing is answered yet: the requests wait until the mode changes.
+    Silent,
+    /// The second picture of each page fails (not published), the others arrive.
+    SecondFails,
+}
+
+/// A small JPEG, made here so that no picture is kept in the repository for the tests.
+fn test_jpeg() -> Vec<u8> {
+    static JPEG: OnceLock<Vec<u8>> = OnceLock::new();
+    JPEG.get_or_init(|| {
+        let (w, h) = (320u32, 200u32);
+        let rgb: Vec<u8> = (0..h).flat_map(|y| (0..w).flat_map(move |x| [(x * 255 / w) as u8, (y * 255 / h) as u8, 160])).collect();
+        let mut out = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80).encode(&rgb, w, h, image::ExtendedColorType::Rgb8).unwrap();
+        out
+    })
+    .clone()
+}
+
 struct Fake {
     events: Vec<Event>,
     sent: Rc<RefCell<Vec<Command>>>,
     manage: bool,
+    pictures: Rc<Cell<Pictures>>,
+    /// Apps whose pictures were asked for and not answered yet.
+    asked: Vec<String>,
     clock: Rc<Cell<i64>>,
 }
 
 impl Backend for Fake {
     fn send(&mut self, command: Command) {
+        if let Command::FetchScreenshots { app } = &command {
+            self.asked.push(app.clone());
+        }
         self.sent.borrow_mut().push(command);
     }
     fn poll(&mut self) -> Vec<Event> {
-        std::mem::take(&mut self.events)
+        let mut out = std::mem::take(&mut self.events);
+        if self.pictures.get() != Pictures::Silent {
+            for app in std::mem::take(&mut self.asked) {
+                let Some(page) = AppDetails::by_id(&app) else { continue };
+                for (i, shot) in page.shots.iter().enumerate() {
+                    let result = match self.pictures.get() {
+                        Pictures::Offline => Err("couldn't reach raw.githubusercontent.com (no connection)".to_string()),
+                        Pictures::SecondFails if i == 1 => Err("this picture isn't published".to_string()),
+                        _ => Ok(test_jpeg()),
+                    };
+                    out.push(Event::Screenshot { app: app.clone(), key: shot.key.to_string(), result });
+                }
+            }
+        }
+        out
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities { manage_apps: self.manage, reveal_label: "Show in Finder", self_update: self.manage }
@@ -123,7 +172,19 @@ fn harness_with(
     manage: bool,
     scale: f32,
 ) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
-    harness_with_title_bar(events, view, theme, manage, scale, artcraft_launcher_ui_egui::TitleBar::Native)
+    harness_full(events, view, theme, manage, scale, artcraft_launcher_ui_egui::TitleBar::Native, Rc::default())
+}
+
+/// Like `harness_with`, with the details pictures answered as `pictures` says (changeable during the test).
+fn harness_pictures(
+    events: Vec<Event>,
+    view: ViewMode,
+    theme: egui::Theme,
+    manage: bool,
+    scale: f32,
+    pictures: Rc<Cell<Pictures>>,
+) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
+    harness_full(events, view, theme, manage, scale, artcraft_launcher_ui_egui::TitleBar::Native, pictures)
 }
 
 fn harness_with_title_bar(
@@ -133,6 +194,18 @@ fn harness_with_title_bar(
     manage: bool,
     scale: f32,
     bar: artcraft_launcher_ui_egui::TitleBar,
+) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
+    harness_full(events, view, theme, manage, scale, bar, Rc::default())
+}
+
+fn harness_full(
+    events: Vec<Event>,
+    view: ViewMode,
+    theme: egui::Theme,
+    manage: bool,
+    scale: f32,
+    bar: artcraft_launcher_ui_egui::TitleBar,
+    pictures: Rc<Cell<Pictures>>,
 ) -> (Harness<'static, Option<LauncherUi>>, Rc<RefCell<Vec<Command>>>) {
     struct HeaderHost(artcraft_launcher_ui_egui::TitleBar);
     impl Host for HeaderHost {
@@ -145,7 +218,7 @@ fn harness_with_title_bar(
     artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
     let sent = Rc::new(RefCell::new(Vec::new()));
     let sent2 = sent.clone();
-    let mut backend = Some(Fake { events, sent: sent2, manage, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend = Some(Fake { events, sent: sent2, manage, pictures, asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
     let settings = Settings { view, notify: false, ..Settings::default() };
     // No `.wgpu()`: it gives every test its own GPU device, and those segfault on parallel test threads (see above).
     // The default renderer creates one only when a test renders.
@@ -181,7 +254,8 @@ fn snapshot(h: &mut Harness<'_, Option<LauncherUi>>, name: &str) {
 #[test]
 fn keeps_working_with_no_window_then_draws_in_a_new_one() {
     let sent = Rc::new(RefCell::new(Vec::new()));
-    let backend = Fake { events: events(), sent: sent.clone(), manage: true, clock: Rc::new(Cell::new(NOW)) };
+    let backend =
+        Fake { events: events(), sent: sent.clone(), manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) };
     let windowless = egui::Context::default();
     let mut ui = LauncherUi::new(&windowless, Box::new(backend), Settings { notify: false, ..Settings::default() });
     // No window: the backend's news is still taken in.
@@ -623,7 +697,8 @@ fn links_open_the_right_pages() {
 fn looks_again_at_installed_apps_every_few_minutes_not_every_frame() {
     let sent = Rc::new(RefCell::new(Vec::new()));
     let clock = Rc::new(Cell::new(NOW));
-    let mut backend = Some(Fake { events: events(), sent: sent.clone(), manage: true, clock: clock.clone() });
+    let mut backend =
+        Some(Fake { events: events(), sent: sent.clone(), manage: true, pictures: Rc::default(), asked: Vec::new(), clock: clock.clone() });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -686,8 +761,10 @@ fn the_launcher_updates_itself_and_quits_to_restart() {
     }
     let quit = Rc::new(Cell::new(false));
     let mut host = QuitHost(quit.clone());
-    let mut backend =
-        Some(Scripted { inner: Fake { events, sent: sent.clone(), manage: true, clock: Rc::new(Cell::new(NOW)) }, later: shared_events.clone() });
+    let mut backend = Some(Scripted {
+        inner: Fake { events, sent: sent.clone(), manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) },
+        later: shared_events.clone(),
+    });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -766,7 +843,7 @@ fn feed_announcements_and_alerts_show_until_dismissed() {
         announcements: vec![notice("a1", "CADCraft 1.0 is out", Some("https://getartcraft.com/news"))],
         alerts: vec![notice("x1", "Security update", Some("https://getartcraft.com/security"))],
     });
-    let mut backend = Some(Fake { events: evs, sent, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend = Some(Fake { events: evs, sent, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -813,7 +890,8 @@ fn automatic_updates_queue_installs_for_outdated_apps_and_launcher() {
     ev.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let sent2 = sent.clone();
-    let mut backend = Some(Fake { events: ev, sent: sent2, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend =
+        Some(Fake { events: ev, sent: sent2, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -841,7 +919,8 @@ fn automatic_updates_are_disabled_by_default() {
     ev.push(Event::LauncherUpdate(release("artcraft-launcher", "0.2.0", NOW)));
     let sent = Rc::new(RefCell::new(Vec::new()));
     let sent2 = sent.clone();
-    let mut backend = Some(Fake { events: ev, sent: sent2, manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend =
+        Some(Fake { events: ev, sent: sent2, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -868,7 +947,7 @@ fn the_footer_names_the_services_behind_what_is_on_screen() {
         let mut evs = events();
         evs.extend(extra);
         let sent = Rc::new(RefCell::new(Vec::new()));
-        let mut backend = Some(Fake { events: evs, sent, manage: true, clock: Rc::new(Cell::new(NOW)) });
+        let mut backend = Some(Fake { events: evs, sent, manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
         let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
             move |ui, state: &mut Option<LauncherUi>| {
                 if state.is_none()
@@ -911,7 +990,14 @@ fn custom_title_bar_has_window_buttons() {
             artcraft_launcher_ui_egui::TitleBar::Custom
         }
     }
-    let mut backend = Some(Fake { events: events(), sent: Rc::new(RefCell::new(Vec::new())), manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend = Some(Fake {
+        events: events(),
+        sent: Rc::new(RefCell::new(Vec::new())),
+        manage: true,
+        pictures: Rc::default(),
+        asked: Vec::new(),
+        clock: Rc::new(Cell::new(NOW)),
+    });
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 900.0)).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {
             if state.is_none()
@@ -937,11 +1023,271 @@ fn custom_title_bar_has_window_buttons() {
 }
 
 #[test]
+fn clicking_a_card_opens_its_details_drawer() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(8);
+    // Every app has a page: a card of each generation opens one.
+    h.get_by_label("VectorCraft details");
+    h.get_by_label("WordCraft details");
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    snapshot(&mut h, "details-dark");
+    h.get_by_label_contains("The image editor you already know how to use");
+    h.get_by_label_contains("Curves and type layers · 1/4");
+    // The links the page offers as buttons of their own.
+    h.get_by_label("Website ↗");
+    h.get_by_label("GitHub ↗");
+    h.get_by_label("Releases ↗");
+    // The picture arrows wrap around, and the thumbnails jump.
+    h.get_by_label("Previous picture (←)").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Selections and masked adjustments · 4/4");
+    h.get_by_label("Next picture (→)").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Curves and type layers · 1/4");
+    // Esc closes it and the page is gone once it has slid out.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    assert!(h.query_by_label_contains("The image editor you already know").is_none());
+}
+
+#[test]
+fn details_drawer_in_the_light_theme() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Light, true);
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    snapshot(&mut h, "details-light");
+    h.get_by_label_contains("The image editor you already know how to use");
+}
+
+fn fetches(sent: &Rc<RefCell<Vec<Command>>>, app: &str) -> usize {
+    sent.borrow().iter().filter(|c| matches!(c, Command::FetchScreenshots { app: a } if a == app)).count()
+}
+
+#[test]
+fn opening_a_page_asks_for_its_pictures_once_and_only_while_it_lacks_some() {
+    let (mut h, sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(8);
+    assert_eq!(fetches(&sent, "photocraft"), 0, "nothing is fetched before a page is opened");
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    assert_eq!(fetches(&sent, "photocraft"), 1);
+    h.get_by_label("Enlarge picture");
+    // Closed and opened again: the pictures are in hand, so nothing is asked.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    assert_eq!(fetches(&sent, "photocraft"), 1);
+    h.get_by_label("Enlarge picture");
+    // Another page asks for its own, and a page without pictures asks for nothing.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    h.get_by_label("VectorCraft details").click();
+    h.run_steps(10);
+    assert_eq!(fetches(&sent, "vectorcraft"), 1);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    h.get_by_label("PdfCraft details").click();
+    h.run_steps(10);
+    assert_eq!(fetches(&sent, "pdfcraft"), 0);
+}
+
+#[test]
+fn a_frame_stands_in_for_the_pictures_until_they_arrive() {
+    let pictures = Rc::new(Cell::new(Pictures::Silent));
+    let (mut h, sent) = harness_pictures(events(), ViewMode::Grid, egui::Theme::Dark, true, 1.0, pictures.clone());
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    snapshot(&mut h, "details-loading-dark");
+    h.get_by_label("Loading pictures…");
+    assert!(h.query_by_label("Enlarge picture").is_none(), "there is nothing to enlarge yet");
+    // The rest of the page is there, and the arrows work on the frames.
+    h.get_by_label_contains("The image editor you already know how to use");
+    h.get_by_label("Next picture (→)").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Levels with a live histogram · 2/4");
+    // Asking again meanwhile is not done: the answer is on its way.
+    assert_eq!(fetches(&sent, "photocraft"), 1);
+    pictures.set(Pictures::Online);
+    h.run_steps(6);
+    assert!(h.query_by_label("Loading pictures…").is_none());
+    h.get_by_label("Enlarge picture");
+}
+
+#[test]
+fn offline_the_frame_says_so_and_opening_the_page_again_retries() {
+    let pictures = Rc::new(Cell::new(Pictures::Offline));
+    let (mut h, sent) = harness_pictures(events(), ViewMode::Grid, egui::Theme::Light, true, 1.0, pictures.clone());
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    snapshot(&mut h, "details-offline-light");
+    h.get_by_label("Pictures couldn't be loaded. Reopen this page to try again.");
+    assert!(h.query_by_label("Loading pictures…").is_none());
+    assert!(h.query_by_label("Enlarge picture").is_none());
+    h.get_by_label_contains("The image editor you already know how to use");
+    // Back online: the page is closed and opened again, which asks again.
+    pictures.set(Pictures::Online);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    assert_eq!(fetches(&sent, "photocraft"), 2);
+    h.get_by_label("Enlarge picture");
+    assert!(h.query_by_label("Pictures couldn't be loaded. Reopen this page to try again.").is_none());
+}
+
+#[test]
+fn the_enlarged_view_shows_a_frame_for_a_picture_still_missing() {
+    let pictures = Rc::new(Cell::new(Pictures::SecondFails));
+    let (mut h, _sent) = harness_pictures(events(), ViewMode::Grid, egui::Theme::Dark, true, 1.0, pictures);
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    h.get_by_label("Enlarge picture").click();
+    h.run_steps(3);
+    // The second picture is missing: flipping to it keeps the view open, with a frame; the others still show.
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    // Once in the drawer behind (it shows the same picture) and once in the enlarged view.
+    assert_eq!(h.query_all_by_label("Pictures couldn't be loaded. Reopen this page to try again.").count(), 2);
+    assert_eq!(h.query_all_by_label("Close (Esc)").count(), 2, "the enlarged view is still open");
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    assert!(h.query_by_label("Pictures couldn't be loaded. Reopen this page to try again.").is_none(), "the third picture is fine");
+}
+
+#[test]
+fn a_page_without_pictures_has_no_gallery() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(8);
+    // PdfCraft's screenshots still show its old name (PrintCraft), so its page has none for now.
+    h.get_by_label("PdfCraft details").click();
+    h.run_steps(10);
+    snapshot(&mut h, "details-no-pictures-dark");
+    h.get_by_label_contains("The open-source PDF workbench.");
+    h.get_by_label_contains("Search as you type");
+    assert!(h.query_by_label("Enlarge picture").is_none());
+    assert!(h.query_by_label("Next picture (→)").is_none());
+}
+
+#[test]
+fn the_lead_picture_can_be_enlarged() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    // The drawer has one "Close (Esc)"; the enlarged view adds its own.
+    assert_eq!(h.query_all_by_label("Close (Esc)").count(), 1);
+    h.get_by_label("Enlarge picture").click();
+    h.run_steps(4);
+    snapshot(&mut h, "details-zoom-dark");
+    assert_eq!(h.query_all_by_label("Close (Esc)").count(), 2);
+    // The keyboard flips through the pictures there too.
+    h.key_press(egui::Key::ArrowRight);
+    h.run_steps(3);
+    h.get_by_label_contains("Levels with a live histogram · 2/4");
+    // Esc closes the enlarged picture first, and the drawer only the second time.
+    h.key_press(egui::Key::Escape);
+    h.run_steps(4);
+    assert_eq!(h.query_all_by_label("Close (Esc)").count(), 1);
+    h.get_by_label_contains("The image editor you already know how to use");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(10);
+    assert!(h.query_by_label_contains("The image editor you already know").is_none());
+}
+
+/// Every page, whatever it holds: no pictures (PdfCraft), one (DesignCraft) or several. The arrow keys are
+/// pressed more often than there are pictures, both ways, to wrap around the list and to do nothing on a
+/// page that has one or none; the enlarged view is opened wherever there is a picture to enlarge.
+#[test]
+fn every_page_opens_and_pages_through_its_pictures() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    // Tall enough to show all twelve cards at once.
+    h.set_size(egui::vec2(1180.0, 3000.0));
+    h.run_steps(8);
+    for d in &artcraft_launcher_core::details::DETAILS {
+        let name = SUITE.iter().find(|a| a.id == d.id).map(|a| a.name).unwrap_or(d.id);
+        h.get_by_label(&format!("{name} details")).click();
+        h.run_steps(8);
+        h.get_by_label_contains(d.headline);
+        let presses = d.shots.len() + 2;
+        for key in [egui::Key::ArrowRight, egui::Key::ArrowLeft] {
+            for _ in 0..presses {
+                h.key_press(key);
+                h.run_steps(1);
+            }
+        }
+        // The picture can be enlarged exactly when the page has one.
+        assert_eq!(h.query_by_label("Enlarge picture").is_some(), !d.shots.is_empty(), "{}", d.id);
+        if !d.shots.is_empty() {
+            h.get_by_label("Enlarge picture").click();
+            h.run_steps(3);
+            for key in [egui::Key::ArrowRight, egui::Key::ArrowLeft] {
+                for _ in 0..presses {
+                    h.key_press(key);
+                    h.run_steps(1);
+                }
+            }
+            // A full lap in each direction brings it back to the first picture. Its caption is in the drawer
+            // and in the enlarged view, and has a counter only when there are several pictures.
+            let first = &d.shots[0];
+            let caption = if d.shots.len() > 1 { format!("{} · 1/{}", first.caption, d.shots.len()) } else { first.caption.to_string() };
+            assert!(h.query_all_by_label_contains(&caption).count() >= 1, "{}: {caption}", d.id);
+            h.key_press(egui::Key::Escape);
+            h.run_steps(3);
+        }
+        h.key_press(egui::Key::Escape);
+        h.run_steps(10);
+        assert!(h.query_by_label_contains(d.headline).is_none(), "{} did not close", d.id);
+    }
+}
+
+/// The drawer and the enlarged picture at sizes far below what the desktop window allows (its minimum is
+/// 720 x 500, but the web build has no such floor) and far above, resized while they are open.
+#[test]
+fn the_drawer_and_the_enlarged_picture_survive_any_window_size() {
+    let (mut h, _sent) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(8);
+    h.get_by_label("PhotoCraft details").click();
+    h.run_steps(10);
+    let sizes = [(1180.0, 900.0), (720.0, 500.0), (480.0, 320.0), (320.0, 200.0), (120.0, 90.0), (40.0, 30.0), (4000.0, 2400.0)];
+    for zoom in [false, true] {
+        if zoom {
+            h.get_by_label("Enlarge picture").click();
+            h.run_steps(3);
+        }
+        for (w, ht) in sizes {
+            h.set_size(egui::vec2(w, ht));
+            h.run_steps(3);
+        }
+        // Back to a normal size, still working.
+        h.set_size(egui::vec2(1180.0, 900.0));
+        h.run_steps(4);
+        if zoom {
+            h.key_press(egui::Key::Escape);
+            h.run_steps(3);
+        }
+        h.get_by_label_contains("The image editor you already know how to use");
+    }
+}
+
+#[test]
 fn the_rate_limit_notice_never_runs_under_the_footer_links() {
     for width in [720.0, 960.0, 1180.0] {
         let mut evs = events();
         evs.push(Event::CheckFinished { at: NOW - 180, source: Source::GitHubApi, rate_limited_until: Some(NOW + 1800) });
-        let mut backend = Some(Fake { events: evs, sent: Rc::new(RefCell::new(Vec::new())), manage: true, clock: Rc::new(Cell::new(NOW)) });
+        let mut backend = Some(Fake {
+            events: evs,
+            sent: Rc::new(RefCell::new(Vec::new())),
+            manage: true,
+            pictures: Rc::default(),
+            asked: Vec::new(),
+            clock: Rc::new(Cell::new(NOW)),
+        });
         let mut h = Harness::builder().with_size(egui::vec2(width, 900.0)).build_ui_state(
             move |ui, state: &mut Option<LauncherUi>| {
                 if state.is_none()
@@ -1034,7 +1380,8 @@ impl Host for OsMotion {
 fn short_window(reduce: Rc<Cell<bool>>) -> Harness<'static, Option<LauncherUi>> {
     artcraft_launcher_ui_egui::i18n::set_test_lang(artcraft_launcher_ui_egui::i18n::Lang::EN);
     let events = events().into_iter().filter(|e| !matches!(e, Event::Progress { .. })).collect();
-    let mut backend = Some(Fake { events, sent: Rc::default(), manage: true, clock: Rc::new(Cell::new(NOW)) });
+    let mut backend =
+        Some(Fake { events, sent: Rc::default(), manage: true, pictures: Rc::default(), asked: Vec::new(), clock: Rc::new(Cell::new(NOW)) });
     let mut host = OsMotion(reduce);
     let mut h = Harness::builder().with_size(egui::vec2(1180.0, 500.0)).with_step_dt(1.0 / 60.0).with_max_steps(120).build_ui_state(
         move |ui, state: &mut Option<LauncherUi>| {

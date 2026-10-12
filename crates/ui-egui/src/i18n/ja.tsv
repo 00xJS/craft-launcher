@@ -263,6 +263,20 @@ column	Released	公開日
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	インストール済み
+	App details	アプリの詳細
+	Close (Esc)	閉じる (Esc)
+	Features	機能
+	Latest release	最新リリース
+	Version	バージョン
+	Platforms	対応プラットフォーム
+	Releases	リリース
+	Enlarge picture	画像を拡大
+	Click to enlarge	クリックして拡大
+	Previous picture (←)	前の画像 (←)
+	Next picture (→)	次の画像 (→)
+	Loading pictures…	画像を読み込み中…
+	Pictures couldn't be loaded. Reopen this page to try again.	画像を読み込めませんでした。このページを開き直すと再試行します。
+	{name} details	{name} の詳細
 
 # Plural forms for Japanese (one form: Japanese nouns don't inflect for number)
 @plural	{n} app|{n} apps	{n} 個のアプリ

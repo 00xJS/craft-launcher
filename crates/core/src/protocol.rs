@@ -43,6 +43,12 @@ pub enum Command {
     },
     /// Download the newer ArtCraft Launcher, put it in place and restart into it.
     UpdateLauncher,
+    /// Fetch the pictures of an app's details page (`core::details`), one [`Event::Screenshot`]
+    /// each, the lead picture first. Pictures already saved on this machine arrive without
+    /// touching the network. Asking again while they are on their way does nothing.
+    FetchScreenshots {
+        app: String,
+    },
     /// Change how the backend behaves.
     Configure(BackendOptions),
 }
@@ -186,6 +192,13 @@ pub enum Event {
     JobFinished {
         app: String,
         result: Result<String, String>,
+    },
+    /// One picture of an app's details page, or why it couldn't be had (offline, not published,
+    /// not a JPEG). `key` is the [`crate::details::Shot::key`].
+    Screenshot {
+        app: String,
+        key: String,
+        result: Result<Vec<u8>, String>,
     },
     CheckStarted,
     CheckFinished {

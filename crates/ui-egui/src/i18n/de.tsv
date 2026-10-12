@@ -260,6 +260,7 @@ column	Released	Datum
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	Installiert
+	{name} details	Details zu {name}
 
 # Plural forms for German (one|other)
 @plural	{n} app|{n} apps	{n} App|{n} Apps
@@ -328,4 +329,17 @@ filter	Installed	Installiert
 	Visit getartcraft.com	getartcraft.com besuchen
 	ArtCraft on GitHub	ArtCraft auf GitHub
 	Join the ArtCraft Discord	Dem ArtCraft-Discord beitreten
+	App details	App-Details
+	Close (Esc)	Schließen (Esc)
+	Features	Funktionen
+	Latest release	Neueste Version
+	Version	Version
+	Platforms	Plattformen
+	Releases	Versionen
+	Enlarge picture	Bild vergrößern
+	Click to enlarge	Zum Vergrößern klicken
+	Previous picture (←)	Vorheriges Bild (←)
+	Next picture (→)	Nächstes Bild (→)
+	Loading pictures…	Bilder werden geladen…
+	Pictures couldn't be loaded. Reopen this page to try again.	Die Bilder konnten nicht geladen werden. Beim erneuten Öffnen der Seite wird es noch einmal versucht.
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} Update verfügbar|ArtCraft Launcher · {n} Updates verfügbar

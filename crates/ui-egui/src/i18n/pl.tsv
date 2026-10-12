@@ -262,6 +262,20 @@ column	Released	Data wydania
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	Zainstalowane
+	App details	Szczegóły aplikacji
+	Close (Esc)	Zamknij (Esc)
+	Features	Funkcje
+	Latest release	Najnowsze wydanie
+	Version	Wersja
+	Platforms	Platformy
+	Releases	Wydania
+	Enlarge picture	Powiększ obraz
+	Click to enlarge	Kliknij, aby powiększyć
+	Previous picture (←)	Poprzedni obraz (←)
+	Next picture (→)	Następny obraz (→)
+	Loading pictures…	Wczytywanie obrazów…
+	Pictures couldn't be loaded. Reopen this page to try again.	Nie udało się wczytać obrazów. Otwórz tę stronę ponownie, aby spróbować jeszcze raz.
+	{name} details	{name} – szczegóły
 
 # Plural forms for Polish (one|few|many)
 @plural	{n} app|{n} apps	{n} aplikacja|{n} aplikacje|{n} aplikacji

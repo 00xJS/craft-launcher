@@ -261,6 +261,20 @@ column	Released	Dátum
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	Telepítve
+	App details	Alkalmazás részletei
+	Close (Esc)	Bezárás (Esc)
+	Features	Funkciók
+	Latest release	Legújabb kiadás
+	Version	Verzió
+	Platforms	Platformok
+	Releases	Kiadások
+	Enlarge picture	Kép nagyítása
+	Click to enlarge	Kattints a nagyításhoz
+	Previous picture (←)	Előző kép (←)
+	Next picture (→)	Következő kép (→)
+	Loading pictures…	Képek betöltése…
+	Pictures couldn't be loaded. Reopen this page to try again.	A képeket nem sikerült betölteni. Nyisd meg újra az oldalt, és újra megpróbáljuk.
+	{name} details	{name} – részletek
 
 # Plural forms for Hungarian (one|other). After a number the noun stays singular.
 @plural	{n} app|{n} apps	{n} alkalmazás|{n} alkalmazás

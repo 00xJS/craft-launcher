@@ -77,6 +77,8 @@ struct Shared {
     feed_ok_at: Mutex<Option<i64>>,
     /// How often ArtCraft's API may be called.
     feed_throttle: Mutex<FeedThrottle>,
+    /// Apps whose details pictures are on their way (a second request meanwhile does nothing).
+    pictures_busy: Mutex<std::collections::HashSet<&'static str>>,
 }
 
 impl Shared {
@@ -131,6 +133,7 @@ impl NativeBackend {
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
             feed_throttle: Mutex::new(FeedThrottle::load(&paths.feed_throttle(), crate::now())),
+            pictures_busy: Mutex::new(std::collections::HashSet::new()),
             last_check: Mutex::new(None),
         });
         let backend = Self { shared, paths, http, source, platform: native_platform(), self_install: crate::self_update::current() };
@@ -858,6 +861,36 @@ fn native_platform() -> Option<Platform> {
     Some(p)
 }
 
+/// Clears an app's "pictures on their way" mark when the thread fetching them ends, panic or not.
+struct PicturesBusy {
+    shared: Arc<Shared>,
+    app: &'static str,
+}
+
+impl Drop for PicturesBusy {
+    fn drop(&mut self) {
+        self.shared.pictures_busy.lock().unwrap_or_else(PoisonError::into_inner).remove(self.app);
+    }
+}
+
+impl NativeBackend {
+    /// Starts fetching the pictures of an app's details page, unless they are already on their way.
+    /// An app without a page, or a name that isn't an app, is ignored.
+    fn fetch_screenshots(&self, app: &str) {
+        let Some(details) = artcraft_launcher_core::details::AppDetails::by_id(app) else { return };
+        if !self.shared.pictures_busy.lock().unwrap_or_else(PoisonError::into_inner).insert(details.id) {
+            return;
+        }
+        let (shared, http, paths) = (self.shared.clone(), self.http.clone(), self.paths.clone());
+        std::thread::spawn(move || {
+            let _busy = PicturesBusy { shared: shared.clone(), app: details.id };
+            crate::screenshots::fetch_all(http.as_ref(), &paths, details, |key, result| {
+                shared.emit(Event::Screenshot { app: details.id.to_string(), key: key.to_string(), result });
+            });
+        });
+    }
+}
+
 impl Backend for NativeBackend {
     fn send(&mut self, command: Command) {
         match command {
@@ -906,6 +939,7 @@ impl Backend for NativeBackend {
                 }
             }
             Command::UpdateLauncher => self.update_launcher(),
+            Command::FetchScreenshots { app } => self.fetch_screenshots(&app),
             Command::Configure(options) => {
                 let changed_pre = {
                     let mut o = self.shared.options.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1006,6 +1040,7 @@ mod tests {
             feed_failures: Mutex::new(0),
             feed_ok_at: Mutex::new(None),
             feed_throttle: Mutex::new(FeedThrottle::new()),
+            pictures_busy: Mutex::new(std::collections::HashSet::new()),
         }
     }
 

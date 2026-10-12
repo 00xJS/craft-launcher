@@ -250,6 +250,20 @@ column	Installed	Instalada
 column	Latest	Última
 column	Released	Publicada
 filter	Installed	Instaladas
+	App details	Detalles de la app
+	Close (Esc)	Cerrar (Esc)
+	Features	Funciones
+	Latest release	Última versión
+	Version	Versión
+	Platforms	Plataformas
+	Releases	Versiones
+	Enlarge picture	Ampliar imagen
+	Click to enlarge	Haz clic para ampliar
+	Previous picture (←)	Imagen anterior (←)
+	Next picture (→)	Imagen siguiente (→)
+	Loading pictures…	Cargando imágenes…
+	Pictures couldn't be loaded. Reopen this page to try again.	No se pudieron cargar las imágenes. Vuelve a abrir esta página para intentarlo de nuevo.
+	{name} details	Detalles de {name}
 @plural	{n} app|{n} apps	{n} aplicación|{n} aplicaciones
 @plural	{n} min ago|{n} min ago	hace {n} min|hace {n} min
 @plural	{n} h ago|{n} h ago	hace {n} h|hace {n} h

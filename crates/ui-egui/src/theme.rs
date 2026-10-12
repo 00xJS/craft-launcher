@@ -145,6 +145,27 @@ pub fn shadow(t: &Tokens) -> egui::epaint::Shadow {
     egui::epaint::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(if t.dark { 140 } else { 36 }) }
 }
 
+/// The dim over the page behind a drawer; `amount` runs from 0 (none) to 1.
+pub fn scrim(t: &Tokens, amount: f32) -> Color32 {
+    let alpha = if t.dark { 170.0 } else { 105.0 } * amount.clamp(0.0, 1.0);
+    Color32::from_black_alpha(alpha.round() as u8)
+}
+
+/// Behind an enlarged picture: near-black in both appearances, as pictures are judged on black.
+pub fn backdrop() -> Color32 {
+    Color32::from_black_alpha(232)
+}
+
+/// A frame standing in for a picture, over [`backdrop`].
+pub fn backdrop_panel() -> Color32 {
+    Color32::from_white_alpha(14)
+}
+
+/// Ink on [`backdrop`], at `alpha` out of 255.
+pub fn backdrop_ink(alpha: u8) -> Color32 {
+    Color32::from_white_alpha(alpha)
+}
+
 fn visuals(t: &Tokens) -> Visuals {
     let mut v = if t.dark { Visuals::dark() } else { Visuals::light() };
     v.panel_fill = t.bg;

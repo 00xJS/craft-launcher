@@ -110,6 +110,16 @@ pub struct LauncherUi {
     pub(crate) search: String,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) dialog: Option<Dialog>,
+    /// The app whose details drawer is open (or closing: see `detail_shown`).
+    pub(crate) detail: Option<String>,
+    /// The app the drawer is drawn for: it outlives `detail` while the drawer slides out.
+    pub(crate) detail_shown: Option<String>,
+    /// Which screenshot the drawer shows.
+    pub(crate) detail_shot: usize,
+    /// The screenshot is enlarged over the whole window.
+    pub(crate) detail_zoom: bool,
+    /// The details pictures the backend has sent (or been asked for), by app and picture key.
+    pub(crate) pictures: std::collections::HashMap<(String, String), crate::details::Picture>,
     started: bool,
     applied_theme: Option<theme::ThemeChoice>,
     /// The OS asks for fewer animations: what the host last said, and the context's time to ask
@@ -173,6 +183,11 @@ impl LauncherUi {
             search: String::new(),
             toasts: Vec::new(),
             dialog: None,
+            detail: None,
+            detail_shown: None,
+            detail_shot: 0,
+            detail_zoom: false,
+            pictures: std::collections::HashMap::new(),
             started: false,
             applied_theme: None,
             reduce_motion: false,
@@ -308,6 +323,10 @@ impl LauncherUi {
                         e.origin = Some(from);
                     }
                 }
+                true
+            }
+            Event::Screenshot { app, key, result } => {
+                self.pictures.insert((app, key), crate::details::Picture::from_result(result));
                 true
             }
             Event::Detected { app, installed } => {
@@ -538,6 +557,7 @@ impl LauncherUi {
                     ui.add_space(16.0);
                 });
             });
+        self.details_drawer(&ctx);
         self.dialogs(&ctx, host);
         self.draw_toasts(&ctx);
         if host.title_bar() == TitleBar::Custom {

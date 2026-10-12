@@ -248,6 +248,7 @@ column	Released	Lançamento
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	Instalados
+	{name} details	Detalhes de {name}
 
 # Plural forms for Brazilian Portuguese (one|other)
 @plural	{n} app|{n} apps	{n} aplicativo|{n} aplicativos
@@ -316,4 +317,17 @@ filter	Installed	Instalados
 	Visit getartcraft.com	Visitar getartcraft.com
 	ArtCraft on GitHub	ArtCraft no GitHub
 	Join the ArtCraft Discord	Entrar no Discord da ArtCraft
+	App details	Detalhes do aplicativo
+	Close (Esc)	Fechar (Esc)
+	Features	Recursos
+	Latest release	Último lançamento
+	Version	Versão
+	Platforms	Plataformas
+	Releases	Lançamentos
+	Enlarge picture	Ampliar imagem
+	Click to enlarge	Clique para ampliar
+	Previous picture (←)	Imagem anterior (←)
+	Next picture (→)	Próxima imagem (→)
+	Loading pictures…	Carregando imagens…
+	Pictures couldn't be loaded. Reopen this page to try again.	Não foi possível carregar as imagens. Abra a página novamente para tentar de novo.
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} atualização disponível|ArtCraft Launcher · {n} atualizações disponíveis

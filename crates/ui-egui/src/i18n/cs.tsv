@@ -237,6 +237,20 @@ column	Installed	Nainstalováno
 column	Latest	Nejnovější
 column	Released	Vydáno
 filter	Installed	Nainstalováno
+	App details	Podrobnosti o aplikaci
+	Close (Esc)	Zavřít (Esc)
+	Features	Funkce
+	Latest release	Nejnovější verze
+	Version	Verze
+	Platforms	Platformy
+	Releases	Vydání
+	Enlarge picture	Zvětšit obrázek
+	Click to enlarge	Kliknutím zvětšíte
+	Previous picture (←)	Předchozí obrázek (←)
+	Next picture (→)	Další obrázek (→)
+	Loading pictures…	Načítání obrázků…
+	Pictures couldn't be loaded. Reopen this page to try again.	Obrázky se nepodařilo načíst. Po opětovném otevření stránky se načtení zkusí znovu.
+	{name} details	Podrobnosti: {name}
 @plural	{n} app|{n} apps	{n} aplikace|{n} aplikace|{n} aplikací
 @plural	{n} min ago|{n} min ago	před {n} min|před {n} min|před {n} min
 @plural	{n} h ago|{n} h ago	před {n} h|před {n} h|před {n} h

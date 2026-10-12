@@ -160,6 +160,27 @@ impl Http {
         }
     }
 
+    /// GET a small binary file (following redirects). `Ok(None)` for a 404. A file of more than
+    /// `max` bytes is refused: by its announced length before a byte is read, and by a hard limit
+    /// on the body when the length wasn't announced or was wrong.
+    pub fn get_bytes(&self, url: &str, max: usize) -> Result<Option<Vec<u8>>, String> {
+        let mut resp = self.small.get(url).call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
+        match resp.status().as_u16() {
+            200 => {
+                let announced = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+                let too_big = || format!("{} sent more than {max} bytes", host(url));
+                if announced.is_some_and(|n| n > max as u64) {
+                    return Err(too_big());
+                }
+                // ureq errors once the limit is reached, so ask for one byte more than we accept.
+                let body = resp.body_mut().with_config().limit(max as u64 + 1).read_to_vec().map_err(|e| format!("unreadable answer ({e})"))?;
+                if body.len() > max { Err(too_big()) } else { Ok(Some(body)) }
+            }
+            404 => Ok(None),
+            s => Err(format!("{} answered HTTP {s}", host(url))),
+        }
+    }
+
     /// Where `url` redirects to, without following it.
     pub fn redirect_target(&self, url: &str) -> Result<Option<String>, String> {
         let resp = self.no_redirect.head(url).call().map_err(|e| format!("couldn't reach {} ({e})", host(url)))?;
@@ -679,6 +700,25 @@ pub(crate) mod tests {
         }
         let seen = ranges.lock().unwrap().clone();
         (result, seen)
+    }
+
+    #[test]
+    fn small_binary_files_are_read_whole_and_a_404_is_none() {
+        let (body, _) = body();
+        let http = Http::new().unwrap();
+        let (url, _) = serve(body.clone(), vec![Reply::Full]);
+        assert_eq!(http.get_bytes(&url, body.len()).unwrap(), Some(body.clone()), "a body of exactly the cap is fine");
+        let (url, _) = serve(body, vec![Reply::Missing]);
+        assert_eq!(http.get_bytes(&url, 1 << 20).unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_over_the_cap_is_refused() {
+        let (body, _) = body();
+        let http = Http::new().unwrap();
+        let (url, _) = serve(body.clone(), vec![Reply::Full]);
+        let err = http.get_bytes(&url, body.len() - 1).unwrap_err();
+        assert!(err.contains("more than"), "{err}");
     }
 
     #[test]

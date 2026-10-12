@@ -1,6 +1,7 @@
 //! The header, toolbar, footer, the grid of cards and the table, laid out like the apps page on
 //! getartcraft.com: hairline cells, mono labels and square controls.
 
+use artcraft_launcher_core::details::AppDetails;
 use artcraft_launcher_core::platform::pick_asset;
 use artcraft_launcher_core::protocol::{Command, JobPhase};
 use artcraft_launcher_core::status::AppStatus;
@@ -397,8 +398,19 @@ impl LauncherUi {
         let wipe = if self.reduce_motion { 0.0 } else { 0.3 };
         let lift = ui.ctx().animate_bool_with_time(ui.id().with(("card-hover", id)), hovered, wipe);
         let app_color = rgb(app.color);
+        // The whole card opens the app's page. Added before the card's own links and buttons, so
+        // they sit on top of it and keep their clicks.
+        if AppDetails::by_id(id).is_some() {
+            let open = ui.interact(rect, ui.id().with(("card-open", id)), Sense::click());
+            open.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, fmt(tl!("{name} details"), &[("name", app.name)])));
+            if open.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                self.detail = Some(id.to_string());
+            }
+        }
         let painter = ui.painter_at(rect.expand(16.0));
-        painter.rect(rect, CornerRadius::ZERO, t.bg, t.hairline(), egui::StrokeKind::Inside);
+        // A faint wash in the app's colour fades in under the pointer.
+        let fill = t.bg.lerp_to_gamma(app_color, 0.05 * lift);
+        painter.rect(rect, CornerRadius::ZERO, fill, t.hairline(), egui::StrokeKind::Inside);
         // On hover, a 2 px rule in the app's colour wipes in from the left along the top.
         if lift > 0.0 {
             painter.rect_filled(Rect::from_min_size(rect.min, vec2(rect.width() * lift, 2.0)), CornerRadius::ZERO, app_color);
@@ -560,6 +572,20 @@ impl LauncherUi {
                                 if i < last {
                                     rule(ui);
                                 }
+                                // Clicking the app's cell opens its page (the content is added after, so it wins any hit).
+                                if AppDetails::by_id(id).is_some() {
+                                    let open = ui.interact(ui.max_rect(), ui.id().with(("row-open", id)), Sense::click());
+                                    open.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            fmt(tl!("{name} details"), &[("name", entry.app.name)]),
+                                        )
+                                    });
+                                    if open.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                                        self.detail = Some(id.to_string());
+                                    }
+                                }
                                 if let Some(icon) = crate::icons::app(entry.app.id) {
                                     ui.add(egui::Image::new(icon).fit_to_exact_size(vec2(38.0, 38.0)));
                                 }
@@ -650,7 +676,13 @@ impl LauncherUi {
     }
 
     /// The main button (or progress) and the … menu, within `width`.
-    fn actions(&mut self, ui: &mut Ui, entry: &AppEntry, status: &AppStatus, width: f32) {
+    pub(crate) fn actions(&mut self, ui: &mut Ui, entry: &AppEntry, status: &AppStatus, width: f32) {
+        self.actions_in(ui, entry, status, width, true);
+    }
+
+    /// The main button and the `⋯` menu beside it. `links_in_menu` is false where the page shows
+    /// the website, GitHub and releases links as buttons of its own.
+    pub(crate) fn actions_in(&mut self, ui: &mut Ui, entry: &AppEntry, status: &AppStatus, width: f32, links_in_menu: bool) {
         let t = Tokens::get(ui.ctx());
         let id = entry.app.id.to_string();
         // One square button (the menu) beside the main one.
@@ -733,7 +765,7 @@ impl LauncherUi {
             if widgets::glyph_button(ui, widgets::Glyph::Close, tl!("Discard download")).clicked() {
                 self.send(Command::Cancel { app: id.clone() });
             }
-            self.menu(ui, entry, status);
+            self.menu(ui, entry, status, links_in_menu);
             return;
         }
         match self.primary_action(entry, status) {
@@ -771,10 +803,10 @@ impl LauncherUi {
                 ui.add_enabled_ui(false, |ui| widgets::button(ui, label, Kind::Secondary, main_w));
             }
         }
-        self.menu(ui, entry, status);
+        self.menu(ui, entry, status, links_in_menu);
     }
 
-    fn menu(&mut self, ui: &mut Ui, entry: &AppEntry, status: &AppStatus) {
+    fn menu(&mut self, ui: &mut Ui, entry: &AppEntry, status: &AppStatus, links: bool) {
         let id = entry.app.id.to_string();
         let manage = self.caps.manage_apps;
         let reveal = self.caps.reveal_label;
@@ -830,16 +862,19 @@ impl LauncherUi {
                     }
                 }
             }
-            ui.separator();
-            let link = |ui: &mut Ui, label: &str, url: String| {
-                if ui.button(label).clicked() {
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                    ui.close();
-                }
-            };
-            link(ui, tl!("Website"), entry.app.website());
-            link(ui, tl!("GitHub repository"), entry.app.repo_url());
-            link(ui, tl!("All releases"), entry.app.releases_url());
+            // The drawer shows the links as buttons, so its menu leaves them out (but keeps Hide).
+            if links {
+                ui.separator();
+                let link = |ui: &mut Ui, label: &str, url: String| {
+                    if ui.button(label).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                        ui.close();
+                    }
+                };
+                link(ui, tl!("Website"), entry.app.website());
+                link(ui, tl!("GitHub repository"), entry.app.repo_url());
+                link(ui, tl!("All releases"), entry.app.releases_url());
+            }
             ui.separator();
             let hidden = self.settings.hidden.contains(entry.app.id);
             if ui.button(if hidden { tl!("Unhide App") } else { tl!("Hide App") }).clicked() {
@@ -869,7 +904,7 @@ fn sort_label(k: SortKey) -> &'static str {
 }
 
 /// "0.4.1 installed → 0.5.0 released · Oct 8, 2026" and friends.
-fn version_line(e: &AppEntry, status: &AppStatus) -> String {
+pub(crate) fn version_line(e: &AppEntry, status: &AppStatus) -> String {
     let released = e.release().and_then(|r| r.published_at).map(|at| format!(" · {}", date_text(at))).unwrap_or_default();
     let inst_ver = e.installed.as_ref().and_then(|i| i.version.as_ref().map(ToString::to_string));
     let latest = e.latest_label();

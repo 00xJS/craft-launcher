@@ -257,6 +257,7 @@ column	Released	Дата релиза
 
 # Contextual: the filter tab names a group (the status pill says "Installed")
 filter	Installed	Установлены
+	{name} details	{name}: подробности
 
 # Plural forms for Russian (one|few|many)
 @plural	{n} app|{n} apps	{n} приложение|{n} приложения|{n} приложений
@@ -324,4 +325,17 @@ filter	Installed	Установлены
 	Visit getartcraft.com	Открыть getartcraft.com
 	ArtCraft on GitHub	ArtCraft на GitHub
 	Join the ArtCraft Discord	Присоединиться к Discord ArtCraft
+	App details	О приложении
+	Close (Esc)	Закрыть (Esc)
+	Features	Возможности
+	Latest release	Последний релиз
+	Version	Версия
+	Platforms	Платформы
+	Releases	Релизы
+	Enlarge picture	Увеличить изображение
+	Click to enlarge	Нажмите, чтобы увеличить
+	Previous picture (←)	Предыдущее изображение (←)
+	Next picture (→)	Следующее изображение (→)
+	Loading pictures…	Загрузка изображений…
+	Pictures couldn't be loaded. Reopen this page to try again.	Не удалось загрузить изображения. Откройте страницу снова, чтобы повторить попытку.
 @plural	ArtCraft Launcher · {n} update available|ArtCraft Launcher · {n} updates available	ArtCraft Launcher · {n} обновление|ArtCraft Launcher · {n} обновления|ArtCraft Launcher · {n} обновлений
