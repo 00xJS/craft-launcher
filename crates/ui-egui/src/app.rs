@@ -182,9 +182,10 @@ impl LauncherUi {
         self.toasts.clear();
     }
 
-    /// Installed apps with an update waiting (the tray shows the count).
+    /// Installed apps with an update waiting (the tray shows the count). Hidden apps are left out,
+    /// so the badge matches the Updates list.
     pub fn update_count(&self) -> usize {
-        self.entries.iter().filter(|e| e.status(self.platform, self.caps.manage_apps) == AppStatus::UpdateAvailable).count()
+        self.entries.iter().filter(|e| self.in_filter(e, Filter::Updates)).count()
     }
 
     /// Something is downloading or installing, the launcher's own update included: quitting now
@@ -377,7 +378,7 @@ impl LauncherUi {
     fn announce_updates(&mut self, host: &mut dyn Host) {
         let mut fresh = Vec::new();
         for e in &self.entries {
-            if e.status(self.platform, self.caps.manage_apps) != AppStatus::UpdateAvailable {
+            if !self.in_filter(e, Filter::Updates) {
                 continue;
             }
             let Some(v) = e.latest_label() else { continue };
@@ -414,7 +415,7 @@ impl LauncherUi {
         let to_update: Vec<(String, String)> = self
             .entries
             .iter()
-            .filter(|e| e.status(self.platform, true) == AppStatus::UpdateAvailable && e.job.is_none() && !e.ready)
+            .filter(|e| self.in_filter(e, Filter::Updates) && e.job.is_none() && !e.ready)
             .filter_map(|e| {
                 let v = e.latest_label()?;
                 if self.auto_update_attempted.contains(&(e.app.id.to_string(), v.clone())) { None } else { Some((e.app.id.to_string(), v)) }
@@ -517,14 +518,8 @@ impl LauncherUi {
             .iter()
             .enumerate()
             .filter(|(_, e)| {
-                let s = e.status(self.platform, self.caps.manage_apps);
-                let keep = match self.settings.filter {
-                    Filter::All => true,
-                    Filter::Installed => s.is_installed(),
-                    Filter::Updates => s == AppStatus::UpdateAvailable,
-                    Filter::NotInstalled => !s.is_installed(),
-                };
-                keep && (needle.is_empty() || e.app.name.to_lowercase().contains(&needle) || e.app.tagline.to_lowercase().contains(&needle))
+                self.in_filter(e, self.settings.filter)
+                    && (needle.is_empty() || e.app.name.to_lowercase().contains(&needle) || e.app.tagline.to_lowercase().contains(&needle))
             })
             .collect();
         let platform = self.platform;
@@ -591,18 +586,20 @@ impl LauncherUi {
     }
 
     pub(crate) fn count(&self, filter: Filter) -> usize {
-        self.entries
-            .iter()
-            .filter(|e| {
-                let s = e.status(self.platform, self.caps.manage_apps);
-                match filter {
-                    Filter::All => true,
-                    Filter::Installed => s.is_installed(),
-                    Filter::Updates => s == AppStatus::UpdateAvailable,
-                    Filter::NotInstalled => !s.is_installed(),
-                }
-            })
-            .count()
+        self.entries.iter().filter(|e| self.in_filter(e, filter)).count()
+    }
+
+    /// Whether `entry` belongs in `filter`. Hidden apps stay out of every list except Hidden.
+    pub(crate) fn in_filter(&self, entry: &AppEntry, filter: Filter) -> bool {
+        let hidden = self.settings.hidden.contains(entry.app.id);
+        let status = entry.status(self.platform, self.caps.manage_apps);
+        match filter {
+            Filter::Hidden => hidden,
+            Filter::All => !hidden,
+            Filter::Installed => !hidden && status.is_installed(),
+            Filter::Updates => !hidden && status == AppStatus::UpdateAvailable,
+            Filter::NotInstalled => !hidden && !status.is_installed(),
+        }
     }
 
     fn draw_toasts(&mut self, ctx: &egui::Context) {

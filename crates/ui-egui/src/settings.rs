@@ -22,6 +22,8 @@ pub enum Filter {
     Installed,
     Updates,
     NotInstalled,
+    /// Apps the user chose to hide from the other lists.
+    Hidden,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +112,8 @@ pub struct Settings {
     pub notified: BTreeMap<String, String>,
     /// Unix seconds of the last finished check.
     pub last_check: Option<i64>,
+    /// Catalog ids of apps hidden from the main lists (`photocraft`, …).
+    pub hidden: std::collections::BTreeSet<String>,
 }
 
 impl Settings {
@@ -181,6 +185,7 @@ impl Default for Settings {
             dismissed_notices: std::collections::BTreeSet::new(),
             notified: BTreeMap::new(),
             last_check: None,
+            hidden: std::collections::BTreeSet::new(),
         }
     }
 }

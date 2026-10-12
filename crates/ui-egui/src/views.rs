@@ -126,6 +126,9 @@ impl LauncherUi {
     }
 
     pub(crate) fn toolbar(&mut self, ui: &mut Ui) {
+        if self.settings.filter == Filter::Hidden && self.settings.hidden.is_empty() {
+            self.settings.filter = Filter::All;
+        }
         let t = Tokens::get(ui.ctx());
         if self.dialog.is_none()
             && let Some(r) = self.launcher_update.clone()
@@ -195,17 +198,19 @@ impl LauncherUi {
         self.announcements(ui);
         ui.horizontal(|ui| {
             let updates = self.count(Filter::Updates);
-            let filters: Vec<(Filter, Cell<'_>)> = [
+            let mut filters = vec![
                 (Filter::All, tl!("All"), tl!("Every Craft app"), None),
                 // The tab names a group ("installed ones"); the status pill says "Installed".
                 (Filter::Installed, tr_ctx(current(), "filter", "Installed"), tl!("Apps on this computer"), None),
                 (Filter::Updates, tl!("Updates"), tl!("Installed apps with a newer version"), Some(t.warn)),
                 (Filter::NotInstalled, tl!("Not installed"), tl!("Apps you can install"), None),
-            ]
-            .into_iter()
-            .filter(|(f, ..)| self.caps.manage_apps || *f == Filter::All)
-            .map(|(f, label, tip, highlight)| (f, Cell { label, tip, count: Some((self.count(f), highlight)) }))
-            .collect();
+            ];
+            filters.retain(|(f, ..)| self.caps.manage_apps || *f == Filter::All);
+            if !self.settings.hidden.is_empty() {
+                filters.push((Filter::Hidden, tl!("Hidden Apps"), tl!("Apps you hid"), None));
+            }
+            let filters: Vec<(Filter, Cell<'_>)> =
+                filters.into_iter().map(|(f, label, tip, highlight)| (f, Cell { label, tip, count: Some((self.count(f), highlight)) })).collect();
             widgets::cells(ui, &mut self.settings.filter, &filters);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.caps.manage_apps && updates > 0 {
@@ -215,12 +220,8 @@ impl LauncherUi {
                         fmt(tl!("Update all ({count})"), &[("count", &updates.to_string())])
                     };
                     if widgets::button(ui, &label, Kind::Primary, 0.0).clicked() {
-                        let ids: Vec<&str> = self
-                            .entries
-                            .iter()
-                            .filter(|e| e.status(self.platform, true) == AppStatus::UpdateAvailable && e.job.is_none())
-                            .map(|e| e.app.id)
-                            .collect();
+                        let ids: Vec<&str> =
+                            self.entries.iter().filter(|e| self.in_filter(e, Filter::Updates) && e.job.is_none()).map(|e| e.app.id).collect();
                         for id in ids {
                             self.send(Command::Install { app: id.to_string() });
                         }
@@ -838,6 +839,19 @@ impl LauncherUi {
             link(ui, tl!("Website"), entry.app.website());
             link(ui, tl!("GitHub repository"), entry.app.repo_url());
             link(ui, tl!("All releases"), entry.app.releases_url());
+            ui.separator();
+            let hidden = self.settings.hidden.contains(entry.app.id);
+            if ui.button(if hidden { tl!("Unhide App") } else { tl!("Hide App") }).clicked() {
+                if hidden {
+                    self.settings.hidden.remove(entry.app.id);
+                    if self.settings.hidden.is_empty() && self.settings.filter == Filter::Hidden {
+                        self.settings.filter = Filter::All;
+                    }
+                } else {
+                    self.settings.hidden.insert(id);
+                }
+                ui.close();
+            }
         });
     }
 }

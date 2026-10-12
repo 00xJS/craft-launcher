@@ -391,6 +391,35 @@ fn table_view_and_light_theme() {
 }
 
 #[test]
+fn hiding_an_app_removes_it_until_it_is_unhidden() {
+    let (mut h, _) = harness(ViewMode::Table, egui::Theme::Dark, true);
+    h.run_steps(6);
+    // PhotoCraft has an update, so hiding it also drops the Updates count.
+    h.get_by_label_contains("Updates 2");
+    let row = h.get_all_by_label("PhotoCraft").next().unwrap().rect().center().y;
+    h.get_all_by_label("…").find(|n| (n.rect().center().y - row).abs() < 25.0).unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("Hide App").click();
+    h.run_steps(4);
+    assert!(h.query_by_label("PhotoCraft").is_none());
+    assert!(h.state().as_ref().unwrap().settings.hidden.contains("photocraft"));
+    h.get_by_label_contains("Updates 1");
+    h.get_by_label_contains("Hidden Apps").click();
+    h.run_steps(4);
+    h.get_by_label("PhotoCraft");
+    assert!(h.query_by_label("WordCraft").is_none());
+    let row = h.get_all_by_label("PhotoCraft").next().unwrap().rect().center().y;
+    h.get_all_by_label("…").find(|n| (n.rect().center().y - row).abs() < 25.0).unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("Unhide App").click();
+    h.run_steps(4);
+    h.get_by_label("PhotoCraft");
+    assert!(h.query_by_label_contains("Hidden Apps").is_none());
+    assert!(h.state().as_ref().unwrap().settings.hidden.is_empty());
+    assert_eq!(h.state().as_ref().unwrap().settings.filter, artcraft_launcher_ui_egui::settings::Filter::All);
+}
+
+#[test]
 fn switching_views_and_filters() {
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
     h.run_steps(6);
