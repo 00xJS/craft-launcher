@@ -258,6 +258,11 @@ impl LauncherUi {
                     for k in [PackageKind::Deb, PackageKind::Rpm, PackageKind::Flatpak, PackageKind::AppImage] {
                         ui.selectable_value(&mut choice, Some(k), crate::i18n::t(k.label()));
                     }
+                    // The tarball is unpacked and run inside the launcher's own sandbox, so it
+                    // is only ever on offer there (as the fallback when the host has no Flatpak).
+                    if is_flatpak {
+                        ui.selectable_value(&mut choice, Some(PackageKind::TarGz), crate::i18n::t(PackageKind::TarGz.label()));
+                    }
                 });
             });
             self.settings.preferred_kinds = choice.into_iter().collect();

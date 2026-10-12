@@ -59,6 +59,15 @@ impl Paths {
     pub fn apps(&self) -> PathBuf {
         self.data.join("apps")
     }
+
+    /// The folder an app unpacked in [`Self::apps`] sees as its home: `<data>/apps/<app>/home`.
+    /// A Craft App keeps its settings in the XDG folders (`~/.config`, `~/.local/share`,
+    /// `~/.cache`), so pointing `HOME` and those variables here keeps every app's configuration
+    /// beside it, inside the folder the launcher owns.
+    #[cfg(target_os = "linux")]
+    pub fn app_home(&self, id: &str) -> PathBuf {
+        self.apps().join(id).join("home")
+    }
 }
 
 /// Writes `bytes` to `path` via a temporary file and a rename, so a crash never leaves half a file.

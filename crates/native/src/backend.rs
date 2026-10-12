@@ -339,7 +339,7 @@ impl NativeBackend {
                 shared.emit(Event::Progress { app: app.id.to_string(), phase: JobPhase::Removing });
                 let mut phase = |phase| shared.emit(Event::Progress { app: app.id.to_string(), phase });
                 match &existing {
-                    Some(inst) => install::uninstall(app, inst, record.as_ref(), &stop, &mut phase).map(|()| {
+                    Some(inst) => install::uninstall(app, inst, record.as_ref(), &paths, &stop, &mut phase).map(|()| {
                         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
                         if m.apps.remove(app.id).is_some() {
                             let _ = m.save(&paths.manifest());
@@ -889,7 +889,7 @@ impl Backend for NativeBackend {
             Command::Launch { app } => {
                 let Some(def) = CraftApp::by_id(&app) else { return };
                 let result = match self.installed(&app) {
-                    Some(inst) => install::launch(def, &inst),
+                    Some(inst) => install::launch(def, &inst, &self.paths),
                     None => Err(format!("{} isn't installed", def.name)),
                 };
                 if let Err(e) = result {

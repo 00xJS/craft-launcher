@@ -11,6 +11,10 @@
 //!   `~/.local/share` so it shows up like any other app. A Flatpak or AppImage launcher prefers
 //!   its own format.
 //! - FreeBSD: the release's `/usr/local` tree, with a polkit prompt (or `~/.local` without one).
+//! - Linux, inside the Flatpak launcher with no usable host Flatpak (none installed, or
+//!   `flatpak-spawn` not allowed): the release tarball, unpacked into the launcher's own folder
+//!   (`<data>/apps/<app>`) and run inside the same sandbox with `HOME` pointed at a `home/`
+//!   folder beside it, so the app's settings stay in the sandbox too.
 //!
 //! Every download is checked against its published SHA-256 before anything is unpacked, a
 //! running app is never replaced, and a new copy is fully in place before the old one goes.
@@ -74,6 +78,8 @@ pub fn install(
         }),
         #[cfg(target_os = "freebsd")]
         PackageKind::TarGz => freebsd::install_tree(app, &file, job.paths).map(|(bin, files, root)| Some(record(&version, kind, bin, files, root))),
+        #[cfg(target_os = "linux")]
+        PackageKind::TarGz => linux::install_tree(app, &file, job.paths).map(|path| Some(record(&version, kind, path, Vec::new(), false))),
         other => Err(format!("{} isn't supported on this system", other.label())),
     };
     match &result {
@@ -205,8 +211,15 @@ pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool)
 
 /// Removes an installed copy. `phase` hears when the removal has to wait for another install;
 /// `stop` cancels it while it waits.
-pub fn uninstall(app: &CraftApp, installed: &Installed, record: Option<&Record>, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
-    let _ = (record, stop, &phase);
+pub fn uninstall(
+    app: &CraftApp,
+    installed: &Installed,
+    record: Option<&Record>,
+    paths: &Paths,
+    stop: &Stop,
+    phase: &mut dyn FnMut(JobPhase),
+) -> Result<(), String> {
+    let _ = (record, stop, &phase, paths);
     let path = PathBuf::from(&installed.location);
     if let Some(msg) = managed_elsewhere(app, installed, true) {
         return Err(msg);
@@ -231,7 +244,13 @@ pub fn uninstall(app: &CraftApp, installed: &Installed, record: Option<&Record>,
             None => Err("the launcher has no record of these files".into()),
         },
         #[cfg(target_os = "linux")]
-        InstallSource::AppImage | InstallSource::Launcher => remove_appimage(app, &path, record),
+        InstallSource::AppImage => remove_appimage(app, &path, record),
+        // A tarball the launcher unpacked into its own folder: take the tree out and leave the
+        // app's settings (`home/`) alone, so a reinstall finds its projects where they were.
+        #[cfg(target_os = "linux")]
+        InstallSource::Launcher if record.is_some_and(|r| r.kind == PackageKind::TarGz) => linux::remove_tree(app, paths),
+        #[cfg(target_os = "linux")]
+        InstallSource::Launcher => remove_appimage(app, &path, record),
         other => Err(format!("{} can't be removed from here", other.label())),
     }
 }
@@ -256,7 +275,8 @@ fn remove_appimage(app: &CraftApp, path: &Path, record: Option<&Record>) -> Resu
 }
 
 /// Starts an installed app.
-pub fn launch(app: &CraftApp, installed: &Installed) -> Result<(), String> {
+pub fn launch(app: &CraftApp, installed: &Installed, paths: &Paths) -> Result<(), String> {
+    let _ = paths;
     let path = Path::new(&installed.location);
     match installed.source {
         InstallSource::Flatpak => {
@@ -265,6 +285,23 @@ pub fn launch(app: &CraftApp, installed: &Installed) -> Result<(), String> {
             process::spawn_detached(cmd)
         }
         InstallSource::MacApp => process::open(path.as_os_str()),
+        // A tarball the launcher unpacked into its own folder: run it here, against its own
+        // home, rather than on the host through `flatpak-spawn` (which is what `launch_binary`
+        // would do inside the sandbox). Its settings then land beside it instead of in the
+        // launcher's or the host's home folder.
+        #[cfg(target_os = "linux")]
+        InstallSource::Launcher if path.starts_with(paths.apps()) => {
+            let home = paths.app_home(app.id);
+            prepare_home(&home);
+            let mut cmd = process::command(path);
+            for (name, value) in home_env(&home) {
+                cmd.env(name, value);
+            }
+            if let Some(dir) = path.parent() {
+                cmd.current_dir(dir);
+            }
+            process::spawn_detached(cmd)
+        }
         _ if cfg!(target_os = "macos") && path.extension().is_some_and(|e| e == "app") => process::open(path.as_os_str()),
         _ => {
             if !path.exists() {
@@ -274,6 +311,44 @@ pub fn launch(app: &CraftApp, installed: &Installed) -> Result<(), String> {
         }
     }
     .map_err(|e| format!("Couldn't open {}: {e}", app.name))
+}
+
+/// The environment a Craft App unpacked by the launcher runs with: its own `HOME` and the XDG
+/// base directories inside it. Apps read their settings from these, so everything they keep
+/// (settings, projects, caches) stays in that one folder.
+#[cfg(target_os = "linux")]
+fn home_env(home: &Path) -> [(&'static str, PathBuf); 5] {
+    [
+        ("HOME", home.to_path_buf()),
+        ("XDG_CONFIG_HOME", home.join(".config")),
+        ("XDG_DATA_HOME", home.join(".local/share")),
+        ("XDG_CACHE_HOME", home.join(".cache")),
+        ("XDG_STATE_HOME", home.join(".local/state")),
+    ]
+}
+
+/// Creates the folders an app unpacked by the launcher expects to find, and links the host's
+/// `~/.vst3` and `~/.clap` (SoundCraft's plugin folders) in when they exist, so an app running
+/// inside the sandbox still sees the plugins installed on the host. Every failure here is
+/// ignored: the app is worth starting even if its home is not quite ready.
+#[cfg(target_os = "linux")]
+fn prepare_home(home: &Path) {
+    for (_, dir) in home_env(home).iter().skip(1) {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let Some(real) = dirs::home_dir() else { return };
+    if real == home {
+        return;
+    }
+    for name in [".vst3", ".clap"] {
+        let link = home.join(name);
+        if link.symlink_metadata().is_ok() {
+            continue;
+        }
+        if real.join(name).is_dir() {
+            let _ = std::os::unix::fs::symlink(real.join(name), link);
+        }
+    }
 }
 
 /// Moves `staged` into place at `dest`, keeping the old copy until the new one is there.
@@ -432,7 +507,10 @@ pub(crate) mod linux {
     /// What this system can install, ordered with the best default first.
     ///
     /// The default package format aligns with how the user installed the launcher itself:
-    /// - Running as a Flatpak: prefers Flatpak (per-user, desktop integration).
+    /// - Running as a Flatpak: prefers Flatpak (per-user, desktop integration). When the host
+    ///   has no usable Flatpak (none installed, or `flatpak-spawn` refused) it prefers the
+    ///   release tarball instead, which the launcher unpacks and runs inside the sandbox; an
+    ///   AppImage cannot mount there and a distro package needs root, so both are dead ends.
     /// - Running as an AppImage: prefers AppImage.
     /// - Otherwise (system install): prefers the distro's own package format (`.deb` on the
     ///   Debian family, `.rpm` on the Fedora, Red Hat and SUSE families, read from `os-release`
@@ -459,6 +537,8 @@ pub(crate) mod linux {
         let mut kinds = Vec::new();
         if is_flatpak && flatpak_available {
             kinds.push(PackageKind::Flatpak);
+        } else if is_flatpak {
+            kinds.push(PackageKind::TarGz);
         } else if is_appimage {
             kinds.push(PackageKind::AppImage);
         }
@@ -472,6 +552,10 @@ pub(crate) mod linux {
 
         if flatpak_available && !kinds.contains(&PackageKind::Flatpak) {
             kinds.push(PackageKind::Flatpak);
+        }
+        // The tarball runs inside the sandbox, so it is only ever offered there.
+        if is_flatpak && !kinds.contains(&PackageKind::TarGz) {
+            kinds.push(PackageKind::TarGz);
         }
         if !kinds.contains(&PackageKind::AppImage) {
             kinds.push(PackageKind::AppImage);
@@ -582,6 +666,49 @@ pub(crate) mod linux {
             }
         }
         Ok((dest, removed))
+    }
+
+    /// Unpacks a release tarball (`bin/<app>`, `share/…`) into `<data>/apps/<app>`, a folder
+    /// only the launcher owns, and returns the app's binary. This is the fallback for the
+    /// Flatpak launcher when the host has no usable Flatpak: the app then runs inside the
+    /// sandbox instead of on the host. `bin` and `share` are swapped in one at a time, so an
+    /// update leaves the app's own `home/` beside them untouched.
+    pub fn install_tree(app: &CraftApp, file: &Path, paths: &Paths) -> Result<PathBuf, String> {
+        let staged = paths.cache.join(format!("{}.new", app.id));
+        let result = unpack_tree(app, file, &staged, paths);
+        let _ = std::fs::remove_dir_all(&staged);
+        result
+    }
+
+    fn unpack_tree(app: &CraftApp, file: &Path, staged: &Path, paths: &Paths) -> Result<PathBuf, String> {
+        let tree = tree::unpack(app, file, staged)?;
+        let root = paths.apps().join(app.id);
+        std::fs::create_dir_all(&root).map_err(|e| format!("couldn't create {} ({e})", root.display()))?;
+        for dir in ["bin", "share"] {
+            if tree.join(dir).is_dir() {
+                swap_into_place(&tree.join(dir), &root.join(dir))?;
+            }
+        }
+        let bin = root.join("bin").join(app.id);
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("couldn't make {} runnable ({e})", bin.display()))?;
+        Ok(bin)
+    }
+
+    /// Removes a tree the launcher unpacked in [`install_tree`], keeping the app's `home/`: the
+    /// settings and projects in it are the user's, not the installer's. Only the two folders the
+    /// launcher put there are removed, and only inside the launcher's own apps folder.
+    pub fn remove_tree(app: &CraftApp, paths: &Paths) -> Result<(), String> {
+        let root = paths.apps().join(app.id);
+        let mut removed = false;
+        for dir in ["bin", "share"] {
+            let path = root.join(dir);
+            if path.starts_with(paths.apps()) && path.is_dir() {
+                std::fs::remove_dir_all(&path).map_err(|e| format!("couldn't remove {} ({e})", path.display()))?;
+                removed = true;
+            }
+        }
+        if removed { Ok(()) } else { Err(format!("{} isn't installed in this folder", app.name)) }
     }
 
     /// Where menu entries and icons go: `$XDG_DATA_HOME`, else `~/.local/share`. Inside the
@@ -1195,6 +1322,57 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn a_tarball_install_lives_in_the_launchers_folder_and_keeps_the_apps_home() {
+        let app = CraftApp::by_id("wordcraft").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let file = dir.path().join("wordcraft-0.3.0-linux-x86_64.tar.gz");
+        tarball(
+            &file,
+            &[
+                "wordcraft-0.3.0-linux-x86_64/bin/wordcraft",
+                "wordcraft-0.3.0-linux-x86_64/bin/wordcraft-cli",
+                "wordcraft-0.3.0-linux-x86_64/share/applications/ai.storyteller.wordcraft.desktop",
+            ],
+        );
+
+        let bin = linux::install_tree(app, &file, &paths).unwrap();
+        let root = paths.apps().join("wordcraft");
+        assert_eq!(bin, root.join("bin").join("wordcraft"));
+        assert!(bin.is_file(), "the app's binary wasn't unpacked");
+        assert!(root.join("share/applications/ai.storyteller.wordcraft.desktop").is_file(), "share/ wasn't unpacked");
+        assert!(!paths.cache.join("wordcraft.new").exists(), "the staging folder was left behind");
+
+        // The app's own home sits beside the tree, and an update keeps it.
+        let home = paths.app_home(app.id);
+        std::fs::create_dir_all(home.join(".config/wordcraft")).unwrap();
+        std::fs::write(home.join(".config/wordcraft/settings.toml"), "keep me").unwrap();
+        linux::install_tree(app, &file, &paths).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join(".config/wordcraft/settings.toml")).unwrap(), "keep me");
+
+        // Removing the install takes the tree and nothing else.
+        linux::remove_tree(app, &paths).unwrap();
+        assert!(!bin.exists() && !root.join("share").exists());
+        assert!(home.join(".config/wordcraft/settings.toml").is_file(), "the app's settings were removed with it");
+        assert!(linux::remove_tree(app, &paths).is_err(), "a second removal says there is nothing there");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_app_sees_its_own_home_and_the_xdg_folders_inside_it() {
+        let home = PathBuf::from("/data/apps/photocraft/home");
+        let env = home_env(&home);
+        assert_eq!(env[0], ("HOME", home.clone()));
+        for (name, dir) in &env[1..] {
+            assert!(dir.starts_with(&home), "{name}: {}", dir.display());
+        }
+        for wanted in ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"] {
+            assert!(env.iter().any(|(name, _)| *name == wanted), "{wanted} isn't set");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn several_debs_fit_one_apt_call_and_share_its_result() {
         // The files are appended to this, so it must end where apt expects packages.
         assert_eq!(
@@ -1398,6 +1576,18 @@ mod tests {
         let kinds = order_available_kinds(false, false, true, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
         assert_eq!(kinds.get(1), Some(&PackageKind::AppImage));
+
+        // The tarball runs inside the sandbox, so it is only offered there: with a usable host
+        // Flatpak it stays an alternative, without one it is the default (an AppImage cannot
+        // mount in a sandbox, and a distro package needs root).
+        let kinds = order_available_kinds(true, false, true, false, false);
+        assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
+        assert_eq!(kinds.get(1), Some(&PackageKind::TarGz));
+        let kinds = order_available_kinds(true, false, false, false, false);
+        assert_eq!(kinds, [PackageKind::TarGz, PackageKind::AppImage]);
+        for (appimage, flatpak) in [(true, true), (false, false), (false, true)] {
+            assert!(!order_available_kinds(false, appimage, flatpak, true, true).contains(&PackageKind::TarGz));
+        }
     }
 
     #[cfg(target_os = "macos")]
