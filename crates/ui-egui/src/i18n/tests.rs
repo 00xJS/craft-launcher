@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use super::catalog::{Catalog, unescape};
-use super::lang::plural_east_slavic;
+use super::lang::{plural_czech, plural_east_slavic};
 use super::{LANGUAGES, Lang, LangInfo, lang_from_tag, message, tr, trn};
 
 /// Each catalog's rows as (line number, context, source, translation), split exactly as the
@@ -209,6 +209,20 @@ fn russian_plural_rule_works() {
 }
 
 #[test]
+fn czech_plural_rule_works() {
+    for n in [0, 5, 11, 21, 22, 25] {
+        assert_eq!(plural_czech(n), 2, "{n}");
+    }
+    assert_eq!(plural_czech(1), 0);
+    for n in [2, 4] {
+        assert_eq!(plural_czech(n), 1, "{n}");
+    }
+    assert_eq!(trn(Lang::CS, 1, "{n} app", "{n} apps"), "1 aplikace");
+    assert_eq!(trn(Lang::CS, 2, "{n} app", "{n} apps"), "2 aplikace");
+    assert_eq!(trn(Lang::CS, 5, "{n} app", "{n} apps"), "5 aplikací");
+}
+
+#[test]
 fn untranslated_plurals_fall_back_to_english_by_count() {
     // Russian's rule says "one" for 21, but English says "other".
     assert_eq!(trn(Lang::RU, 21, "{n} unknown item", "{n} unknown items"), "21 unknown items");
@@ -218,6 +232,10 @@ fn untranslated_plurals_fall_back_to_english_by_count() {
 
 #[test]
 fn locale_tags_resolve() {
+    for tag in ["cs", "cs-CZ", "cs_CZ.UTF-8", "CS_cz"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::CS), "{tag}");
+    }
+    assert_eq!(super::detect::first_supported(["xx-XX", "cs-CZ", "en-US"]), Some(Lang::CS));
     assert_eq!(lang_from_tag("pt_BR.UTF-8"), Some(Lang::PT_BR));
     assert_eq!(lang_from_tag("pt-BR"), Some(Lang::PT_BR));
     assert_eq!(lang_from_tag("pt"), Some(Lang::PT_BR));
