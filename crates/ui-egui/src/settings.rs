@@ -117,13 +117,13 @@ impl Settings {
     pub const LANGUAGE_AUTO: &'static str = "auto";
 
     /// Display name for a language `code`: a language's name in itself, from the registry
-    /// ([`LANGUAGES`](crate::i18n::LANGUAGES)). A language needing the system's Chinese font is
-    /// named in English, with its own name added only once that font is loaded (labels never load
-    /// it: choosing the language does); "Auto" for `auto` and unknown codes, like
+    /// ([`LANGUAGES`](crate::i18n::LANGUAGES)). A language needing a CJK font is named in English,
+    /// with its own name added only while `installed` — the CJK face in the current font stack — is
+    /// that language (no other face draws it); "Auto" for `auto` and unknown codes, like
     /// [`Lang::from_pref`](crate::i18n::Lang::from_pref).
-    pub fn language_label(code: &str) -> String {
+    pub fn language_label(code: &str, installed: Option<crate::i18n::Lang>) -> String {
         match crate::i18n::Lang::from_code(code) {
-            Some(lang) if lang.needs_cjk_font() && crate::theme::cjk_font_loaded() => format!("{} ({})", lang.english_name(), lang.name()),
+            Some(lang) if lang.needs_cjk_font() && installed == Some(lang) => format!("{} ({})", lang.english_name(), lang.name()),
             Some(lang) if lang.needs_cjk_font() => lang.english_name().to_string(),
             Some(lang) => lang.name().to_string(),
             None => t("Auto").to_string(),

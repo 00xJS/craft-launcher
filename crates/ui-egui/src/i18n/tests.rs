@@ -365,16 +365,34 @@ fn chinese_counts_and_english_fallback_work() {
     assert_eq!(message(Lang::ZH_CN, "PhotoCraft updated to 0.5.0"), "PhotoCraft 已更新至 0.5.0");
 }
 
+#[test]
+fn japanese_locales_and_counts_work() {
+    for tag in ["ja", "ja-JP", "ja_JP.UTF-8", "JA_jp"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::JA), "{tag}");
+    }
+    assert_eq!(super::detect::first_supported(["xx-XX", "ja-JP", "en-US"]), Some(Lang::JA));
+    // Japanese has one plural form.
+    for n in [0, 1, 2, 11, 100] {
+        assert_eq!(trn(Lang::JA, n, "{n} app", "{n} apps"), format!("{n} 個のアプリ"));
+        assert_eq!(trn(Lang::JA, n, "{n} day ago", "{n} days ago"), format!("{n} 日前"));
+    }
+    assert_eq!(trn(Lang::JA, 2, "{n} unknown item", "{n} unknown items"), "2 unknown items");
+    assert_eq!(tr(Lang::JA, "Untranslated diagnostic"), "Untranslated diagnostic");
+    assert_eq!(super::tr_ctx(Lang::JA, "month", "Mar"), "3月");
+    assert_eq!(tr(Lang::JA, "{month} {day}, {year}"), "{year}年{month}{day}日");
+    assert_eq!(message(Lang::JA, "PhotoCraft updated to 0.5.0"), "PhotoCraft を 0.5.0 に更新しました");
+}
+
 /// With the system's Chinese font installed, every UI family can draw the whole Chinese catalog.
 /// Machines without one (CI, the web) skip this; the UI then stays in English.
 #[test]
 fn system_font_covers_chinese_in_every_ui_family() {
     use egui::{FontFamily, FontId};
-    if !crate::theme::cjk_font_available() {
+    if !crate::theme::cjk_font_available(Lang::ZH_CN) {
         return;
     }
     let ctx = egui::Context::default();
-    crate::theme::install_fonts(&ctx, true);
+    crate::theme::install_fonts(&ctx, Some(Lang::ZH_CN));
     let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
     output.textures_delta.clear();
     let text: String = Lang::ZH_CN
@@ -399,22 +417,54 @@ fn system_font_covers_chinese_in_every_ui_family() {
     }
 }
 
+/// With a system CJK font installed, every UI family can draw the whole Japanese catalog.
+/// Machines without one (CI, the web) skip this.
+#[test]
+fn system_font_covers_japanese_in_every_ui_family() {
+    use egui::{FontFamily, FontId};
+    if !crate::theme::cjk_font_available(Lang::JA) {
+        return;
+    }
+    let ctx = egui::Context::default();
+    crate::theme::install_fonts(&ctx, Some(Lang::JA));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    let text: String = Lang::JA
+        .0
+        .source
+        .lines()
+        .filter_map(|line| line.split('\t').nth(2))
+        .flat_map(str::chars)
+        .filter(|c| ('\u{3040}'..='\u{30ff}').contains(c) || ('\u{3400}'..='\u{9fff}').contains(c))
+        .collect();
+    assert!(text.chars().count() > 200);
+    for family in [
+        FontFamily::Proportional,
+        FontFamily::Monospace,
+        crate::theme::medium(),
+        crate::theme::semibold(),
+        crate::theme::display(),
+        crate::theme::mono(),
+        crate::theme::mono_bold(),
+    ] {
+        ctx.fonts_mut(|fonts| assert!(fonts.has_glyphs(&FontId::new(14.0, family.clone()), &text), "missing glyph in {family:?}"));
+    }
+}
+
 #[test]
 fn language_labels_come_from_the_registry() {
     use crate::settings::Settings;
     for lang in Lang::all().filter(|l| !l.needs_cjk_font()) {
-        assert_eq!(Settings::language_label(lang.code()), lang.name());
+        assert_eq!(Settings::language_label(lang.code(), None), lang.name());
     }
-    // Chinese: in English until its font is loaded (which a label never does), then both.
-    // (Other tests may load the font meanwhile.)
-    let before = crate::theme::cjk_font_loaded();
-    let label = Settings::language_label(Lang::ZH_CN.code());
-    let after = crate::theme::cjk_font_loaded();
-    assert!(label == "Simplified Chinese (简体中文)" || label == "Simplified Chinese", "{label}");
-    assert!(!before || label.contains("简体中文"), "{label}");
-    assert!(after || !label.contains("简体中文"), "{label}");
-    assert_eq!(Settings::language_label(Settings::LANGUAGE_AUTO), "Auto");
-    assert_eq!(Settings::language_label("xx"), "Auto");
+    // A CJK language is named in English, and its own name is added only while its face is the one
+    // in the font stack: no other face draws it.
+    assert_eq!(Settings::language_label(Lang::ZH_CN.code(), None), "Simplified Chinese");
+    assert_eq!(Settings::language_label(Lang::ZH_CN.code(), Some(Lang::ZH_CN)), "Simplified Chinese (简体中文)");
+    assert_eq!(Settings::language_label(Lang::JA.code(), Some(Lang::ZH_CN)), "Japanese");
+    assert_eq!(Settings::language_label(Lang::JA.code(), Some(Lang::JA)), "Japanese (日本語)");
+    assert_eq!(Settings::language_label(Settings::LANGUAGE_AUTO, None), "Auto");
+    assert_eq!(Settings::language_label("xx", None), "Auto");
 }
 
 // The parser.

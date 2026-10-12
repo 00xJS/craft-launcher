@@ -109,9 +109,9 @@ pub struct LauncherUi {
     /// Fonts registered with `set_fonts` only exist from the next frame on; drawing with the named
     /// weights before then would abort.
     fonts_ready: bool,
-    /// Whether the installed fonts include the system's Chinese font. Added the first time Chinese
-    /// is the language in use, then kept for the session.
-    cjk_fonts: bool,
+    /// The CJK language whose system font is installed, if any.
+    /// Set when such a language comes into use, then kept for the session.
+    pub(crate) cjk_font: Option<crate::i18n::Lang>,
     sent_options: Option<BackendOptions>,
     /// Unix seconds of the last look at what's installed (startup counts).
     last_detect: i64,
@@ -122,12 +122,12 @@ pub struct LauncherUi {
     pub(crate) auto_update_attempted: std::collections::BTreeSet<(String, String)>,
 }
 
-/// The language to draw in: the preference, or English where it needs a Chinese font the system
+/// The language to draw in: the preference, or English where it needs a CJK font the system
 /// doesn't have (Settings says so), rather than boxes for every character. The only place the
-/// Chinese font gets loaded: when Chinese is selected, or Auto resolves to it.
+/// CJK font gets loaded: when such a language is selected, or Auto resolves to it.
 pub(crate) fn effective_lang(pref: &str) -> crate::i18n::Lang {
     let lang = crate::i18n::Lang::from_pref(pref);
-    if lang.needs_cjk_font() && !theme::cjk_font_available() { crate::i18n::Lang::EN } else { lang }
+    if lang.needs_cjk_font() && !theme::cjk_font_available(lang) { crate::i18n::Lang::EN } else { lang }
 }
 
 /// How often to look again at what's installed, to notice apps installed or removed outside
@@ -138,8 +138,9 @@ const RESCAN_ON_FOCUS_AFTER: i64 = 30;
 
 impl LauncherUi {
     pub fn new(ctx: &egui::Context, backend: Box<dyn Backend>, settings: Settings) -> Self {
-        let cjk_fonts = effective_lang(&settings.language).needs_cjk_font();
-        theme::install_fonts(ctx, cjk_fonts);
+        let lang = effective_lang(&settings.language);
+        let cjk_font = lang.needs_cjk_font().then_some(lang);
+        theme::install_fonts(ctx, cjk_font);
         egui_extras::install_image_loaders(ctx);
         let caps = backend.capabilities();
         let platform = backend.platform();
@@ -163,7 +164,7 @@ impl LauncherUi {
             started: false,
             applied_theme: None,
             fonts_ready: false,
-            cjk_fonts,
+            cjk_font,
             sent_options: None,
             last_detect: 0,
             was_focused: true,
@@ -174,7 +175,7 @@ impl LauncherUi {
     /// Moves the UI to another window's context: fonts, image loaders and the theme belong to a
     /// context, and toasts are timed on its clock.
     pub fn attach(&mut self, ctx: &egui::Context) {
-        theme::install_fonts(ctx, self.cjk_fonts);
+        theme::install_fonts(ctx, self.cjk_font);
         egui_extras::install_image_loaders(ctx);
         self.fonts_ready = false;
         self.applied_theme = None;
@@ -444,10 +445,10 @@ impl LauncherUi {
         // Set the current language for this frame based on settings.
         let lang = effective_lang(&self.settings.language);
         set_current(lang);
-        // `effective_lang` only picks Chinese once its font has loaded.
-        if lang.needs_cjk_font() && !self.cjk_fonts {
-            theme::install_fonts(&ctx, true);
-            self.cjk_fonts = true;
+        // `effective_lang` only picks a CJK language once its font has loaded.
+        if lang.needs_cjk_font() && self.cjk_font != Some(lang) {
+            theme::install_fonts(&ctx, Some(lang));
+            self.cjk_font = Some(lang);
             self.fonts_ready = false;
         }
         if !self.fonts_ready {
