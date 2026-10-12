@@ -4,7 +4,7 @@
 use std::collections::{BTreeSet, HashSet};
 
 use super::catalog::{Catalog, unescape};
-use super::lang::{plural_czech, plural_east_slavic};
+use super::lang::{plural_czech, plural_east_slavic, plural_polish};
 use super::{LANGUAGES, Lang, LangInfo, lang_from_tag, message, tr, trn};
 
 /// Each catalog's rows as (line number, context, source, translation), split exactly as the
@@ -223,6 +223,25 @@ fn czech_plural_rule_works() {
 }
 
 #[test]
+fn polish_plural_rule_works() {
+    // Polish says "one" only for 1 itself: 21, 31 and 101 take "many", unlike Russian.
+    assert_eq!(plural_polish(1), 0);
+    for n in [2, 3, 4, 22, 23, 24, 102, 122] {
+        assert_eq!(plural_polish(n), 1, "{n}");
+    }
+    for n in [0, 5, 11, 12, 13, 14, 15, 21, 25, 31, 100, 101, 111, 112] {
+        assert_eq!(plural_polish(n), 2, "{n}");
+    }
+    assert_eq!(trn(Lang::PL, 1, "{n} app", "{n} apps"), "1 aplikacja");
+    assert_eq!(trn(Lang::PL, 3, "{n} app", "{n} apps"), "3 aplikacje");
+    assert_eq!(trn(Lang::PL, 22, "{n} app", "{n} apps"), "22 aplikacje");
+    assert_eq!(trn(Lang::PL, 5, "{n} app", "{n} apps"), "5 aplikacji");
+    assert_eq!(trn(Lang::PL, 21, "{n} app", "{n} apps"), "21 aplikacji");
+    // A key the Polish catalog doesn't carry falls back to the English forms.
+    assert_eq!(trn(Lang::PL, 3, "{n} unknown item", "{n} unknown items"), "3 unknown items");
+}
+
+#[test]
 fn untranslated_plurals_fall_back_to_english_by_count() {
     // Russian's rule says "one" for 21, but English says "other".
     assert_eq!(trn(Lang::RU, 21, "{n} unknown item", "{n} unknown items"), "21 unknown items");
@@ -295,6 +314,14 @@ fn spanish_locales_and_plurals_work() {
     assert_eq!(trn(Lang::ES, 3, "{n} day ago", "{n} days ago"), "hace 3 días");
     assert_eq!(tr(Lang::ES, "{month} {day}, {year}"), "{day} {month} {year}");
     assert_eq!(message(Lang::ES, "PhotoCraft updated to 0.5.0"), "PhotoCraft actualizada a 0.5.0");
+}
+
+#[test]
+fn polish_locales_resolve() {
+    for tag in ["pl", "pl-PL", "pl_PL.UTF-8", "PL_pl"] {
+        assert_eq!(lang_from_tag(tag), Some(Lang::PL), "{tag}");
+    }
+    assert_eq!(super::detect::first_supported(["xx-XX", "pl-PL", "en-US"]), Some(Lang::PL));
 }
 
 #[test]
