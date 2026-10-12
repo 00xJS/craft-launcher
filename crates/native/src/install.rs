@@ -504,6 +504,12 @@ pub(crate) mod linux {
         }
     }
 
+    /// Fedora Atomic (Silverblue, Kinoite, Bazzite…): rpm-ostree manages the root filesystem and
+    /// `dnf install` of a local package is refused (Bazzite wraps `/usr/bin/dnf` to say so).
+    fn immutable_ostree() -> bool {
+        Path::new("/run/ostree-booted").exists()
+    }
+
     /// What this system can install, ordered with the best default first.
     ///
     /// The default package format aligns with how the user installed the launcher itself:
@@ -522,6 +528,8 @@ pub(crate) mod linux {
         let root = which("pkexec").is_some();
         let os = ["/etc/os-release", "/usr/lib/os-release"].iter().find_map(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
         let native = distro::native_package(&distro::parse_os_release(&os));
+        // An ostree system can't take .deb or .rpm installs, whatever os-release says.
+        let root = root && !immutable_ostree();
         let can_deb = root && native == Some(PackageKind::Deb) && which("apt-get").is_some() && which("dpkg").is_some();
         let can_rpm = root && native == Some(PackageKind::Rpm) && which("rpm").is_some();
         order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm)
@@ -1530,6 +1538,18 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn desktop_entry_is_ours(path: &Path) -> bool {
         crate::desktop_entry::is_ours(&std::fs::read_to_string(path).unwrap())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn immutable_ostree_offers_no_deb_or_rpm() {
+        if !Path::new("/run/ostree-booted").exists() {
+            return;
+        }
+        let kinds = available_kinds();
+        assert!(!kinds.contains(&PackageKind::Rpm), "{kinds:?}");
+        assert!(!kinds.contains(&PackageKind::Deb), "{kinds:?}");
+        assert!(kinds.contains(&PackageKind::AppImage), "{kinds:?}");
     }
 
     #[test]
