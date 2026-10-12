@@ -476,7 +476,7 @@ fn run_install(
         shared.emit(Event::Progress { app: app.id.to_string(), phase: p });
     };
     let mut job = Job { http, paths, stop, phase: &mut phase };
-    let (new_record, verified) = install::install(app, &release, &asset, kind, existing, record, &mut job)?;
+    let new_record = install::install(app, &release, &asset, kind, existing, record, &mut job)?;
     {
         let mut m = shared.manifest.lock().unwrap_or_else(PoisonError::into_inner);
         let changed = match new_record {
@@ -491,11 +491,7 @@ fn run_install(
             log::warn!("couldn't save the install record: {e}");
         }
     }
-    let note = match verified {
-        http::Verified::Checksum => "",
-        http::Verified::SizeOnly => " (this release publishes no checksum, so only its size was checked)",
-    };
-    Ok(format!("{}{note}", installed_text(app, existing.is_some(), &release)))
+    Ok(installed_text(app, existing.is_some(), &release))
 }
 
 /// What a finished install tells the user.

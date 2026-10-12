@@ -21,7 +21,7 @@ use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
 use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind};
 
-use crate::http::{Http, Stop, Transfer, Verified};
+use crate::http::{Http, Stop, Transfer};
 use crate::manifest::Record;
 use crate::paths::Paths;
 use crate::process;
@@ -45,7 +45,7 @@ pub fn install(
     existing: Option<&Installed>,
     previous: Option<&Record>,
     job: &mut Job<'_>,
-) -> Result<(Option<Record>, Verified), String> {
+) -> Result<Option<Record>, String> {
     let _ = previous;
     if let Some(inst) = existing
         && inst.source.launcher_can_update()
@@ -54,7 +54,7 @@ pub fn install(
         return Err(format!("{} is running. Quit it, then try again.", app.name));
     }
     log::info!("{}: starting {} to {} ({})", app.name, if existing.is_some() { "update" } else { "install" }, release.version_label(), kind.label());
-    let (file, verified) = download(release, asset, job)?;
+    let file = download(release, asset, job)?;
     log::info!("{}: download ready ({}), running installer...", app.name, file.display());
     // Past this point the install can't be interrupted halfway.
     (job.phase)(JobPhase::Installing);
@@ -81,18 +81,13 @@ pub fn install(
         Err(e) if e == CANCELLED => log::info!("{}: installation cancelled", app.name),
         Err(e) => log::error!("{}: installation failed: {e}", app.name),
     }
-    if !keep_download(result.is_ok(), verified) {
+    // A failed install keeps the download: the next try checks it against its published checksum
+    // again and skips the transfer.
+    if result.is_ok() {
         let _ = std::fs::remove_file(&file);
     }
     // The system's own prompt was dismissed: the download itself wasn't cancelled.
-    result.map(|r| (r, verified)).map_err(|e| if e == CANCELLED { INSTALL_CANCELLED.to_string() } else { e })
-}
-
-/// Whether the download stays on disk once the install step has ended. A failed install keeps it:
-/// the next try checks it against its published checksum again and skips the transfer. Without a
-/// checksum there's nothing to check it against later, so it goes.
-fn keep_download(installed: bool, verified: Verified) -> bool {
-    !installed && verified == Verified::Checksum
+    result.map_err(|e| if e == CANCELLED { INSTALL_CANCELLED.to_string() } else { e })
 }
 
 /// Where `asset` is downloaded to (and its partial file kept while unfinished).
@@ -150,10 +145,10 @@ pub fn available_kinds() -> Vec<PackageKind> {
     Vec::new()
 }
 
-/// Fetches `asset` into the download folder, checked against its published SHA-256: GitHub's
-/// per-file digest, else the release's `SHA256SUMS.txt`. A release with neither still installs,
-/// checked by size only, and says so.
-pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<(PathBuf, Verified), String> {
+/// Fetches `asset` into the download folder, checked against its published SHA-256: the feed's
+/// or GitHub's per-file digest, else the release's `SHA256SUMS.txt`. A release with neither is
+/// refused before anything is fetched: a file nothing vouches for is never installed (#90).
+pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> Result<PathBuf, String> {
     if !release::valid_file_name(&asset.name) {
         return Err("the release has an unexpected file name".into());
     }
@@ -161,17 +156,20 @@ pub(crate) fn download(release: &Release, asset: &Asset, job: &mut Job<'_>) -> R
         Some(s) => Some(s.clone()),
         None => published_checksum(release, asset, job.http)?,
     };
-    if sha.is_none() {
-        log::warn!("{}: no published checksum; checking the size only", asset.name);
-    }
+    let Some(sha) = sha else {
+        return Err(format!(
+            "the release publishes no checksum for {}, so it can't be verified and wasn't installed. Try again later, or report it on GitHub.",
+            asset.name
+        ));
+    };
     let dest = download_path(job.paths, asset);
     let phase = &mut *job.phase;
-    let verified = job.http.download(&asset.url, &dest, asset.size, sha.as_deref(), job.stop, &mut |t| match t {
+    job.http.download(&asset.url, &dest, asset.size, &sha, job.stop, &mut |t| match t {
         Transfer::Bytes { done, total } => phase(JobPhase::Downloading { done, total }),
         Transfer::Reconnecting { done, total } => phase(JobPhase::Reconnecting { done, total }),
     })?;
     (job.phase)(JobPhase::Verifying);
-    Ok((dest, verified))
+    Ok(dest)
 }
 
 /// The file's line in the release's `SHA256SUMS.txt`. `Ok(None)` only when the release really
@@ -1101,18 +1099,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_failed_install_of_a_checksummed_download_keeps_it() {
-        for (installed, verified, keep) in [
-            (false, Verified::Checksum, true),
-            (false, Verified::SizeOnly, false),
-            (true, Verified::Checksum, false),
-            (true, Verified::SizeOnly, false),
-        ] {
-            assert_eq!(keep_download(installed, verified), keep, "installed: {installed}, {verified:?}");
-        }
-    }
-
-    #[test]
     fn a_failed_install_keeps_the_download_for_the_next_try() {
         use crate::http::tests::{Reply, body, serve};
         let app = CraftApp::by_id("wordcraft").unwrap();
@@ -1135,14 +1121,29 @@ mod tests {
         }
         assert_eq!(requests.lock().unwrap().len(), 1, "the second try reuses the kept file");
         assert_eq!(phases.iter().filter(|p| **p == JobPhase::Installing).count(), 2);
+    }
 
-        // Checked by size only: not kept.
-        let unchecked = Asset { name: "wordcraft-0.3.1-test.pkg".into(), sha256: None, ..asset };
-        let mut phase = |_: JobPhase| {};
+    #[test]
+    fn a_release_without_a_checksum_is_refused_before_anything_is_fetched() {
+        use crate::http::tests::{Reply, body, serve};
+        let app = CraftApp::by_id("wordcraft").unwrap();
+        let (body, _) = body();
+        let (url, requests) = serve(body.clone(), vec![Reply::Full]);
+        // Neither a per-file digest nor a SHA256SUMS.txt in the release.
+        let asset = Asset { name: "wordcraft-0.3.1-test.pkg".into(), size: body.len() as u64, url, sha256: None };
+        let release = Release { assets: vec![asset.clone()], ..Release::default() };
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new().unwrap();
+        let kind = if cfg!(windows) { PackageKind::Dmg } else { PackageKind::Msi };
+        let mut phases = Vec::new();
+        let mut phase = |p: JobPhase| phases.push(p);
         let mut job = Job { http: &http, paths: &paths, stop: &Stop::default(), phase: &mut phase };
-        install(app, &release, &unchecked, kind, None, None, &mut job).unwrap_err();
-        assert!(!download_path(&paths, &unchecked).exists());
-        assert_eq!(requests.lock().unwrap().len(), 2);
+        let err = install(app, &release, &asset, kind, None, None, &mut job).unwrap_err();
+        assert!(err.contains("publishes no checksum"), "{err}");
+        assert!(!download_path(&paths, &asset).exists());
+        assert!(requests.lock().unwrap().is_empty(), "nothing was fetched");
+        assert!(!phases.contains(&JobPhase::Installing));
     }
 
     #[cfg(unix)]
