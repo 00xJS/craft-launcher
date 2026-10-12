@@ -70,6 +70,19 @@ pub(crate) enum Dialog {
     LauncherUpdate(artcraft_launcher_core::Release),
 }
 
+impl Dialog {
+    /// What sets this dialog apart from the others, for egui's memory: each one keeps its own
+    /// size there, so a small prompt never opens at the height of the last dialog shown (#88).
+    pub(crate) fn key(&self) -> (&'static str, &str) {
+        match self {
+            Dialog::Notes(id) => ("notes", id),
+            Dialog::ConfirmUninstall(id) => ("uninstall", id),
+            Dialog::Settings => ("settings", ""),
+            Dialog::LauncherUpdate(r) => ("launcher-update", &r.tag),
+        }
+    }
+}
+
 pub struct LauncherUi {
     pub(crate) backend: Box<dyn Backend>,
     pub settings: Settings,

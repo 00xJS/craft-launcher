@@ -476,6 +476,31 @@ fn settings_link_to_discord() {
 }
 
 #[test]
+fn the_uninstall_prompt_keeps_its_own_size_after_a_taller_dialog() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(6);
+    // Settings is the tallest dialog: open it and close it again.
+    h.get_by_label("Settings").click();
+    h.run_steps(4);
+    h.get_by_label("Done").click();
+    h.run_steps(3);
+    // PhotoCraft is installed, so its … menu offers Uninstall.
+    h.get_all_by_label("…").next().unwrap().click();
+    h.run_steps(3);
+    h.get_by_label("Uninstall…").click();
+    h.run_steps(4);
+    snapshot(&mut h, "uninstall-prompt-dark");
+    // The buttons follow the text closely, not somewhere down the height Settings had (#88).
+    let text = h.get_by_label("The app will be moved to the Trash. Your documents and settings stay.").rect();
+    let button = h.get_by_label("Uninstall").rect();
+    let gap = button.top() - text.bottom();
+    assert!((0.0..48.0).contains(&gap), "the buttons sit {gap} px below the text");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Uninstall").is_none());
+}
+
+#[test]
 fn links_to_the_website_github_and_each_apps_pages() {
     let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
     h.run_steps(6);
