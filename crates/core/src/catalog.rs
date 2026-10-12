@@ -45,6 +45,8 @@ pub struct CraftApp {
     pub repo: &'static str,
     /// Older names its release assets may carry (PdfCraft shipped as PrintCraft until 0.2.1).
     pub former_ids: &'static [&'static str],
+    /// Older display names its installers registered (PdfCraft's MSI said PrintCraft until 0.2.1).
+    pub former_names: &'static [&'static str],
 }
 
 impl CraftApp {
@@ -71,6 +73,11 @@ impl CraftApp {
         std::iter::once(self.id).chain(self.former_ids.iter().copied())
     }
 
+    /// Display names this app's installers may have registered, current first.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        std::iter::once(self.name).chain(self.former_names.iter().copied())
+    }
+
     pub fn by_id(id: &str) -> Option<&'static CraftApp> {
         SUITE.iter().find(|a| a.id == id)
     }
@@ -84,7 +91,7 @@ const fn app(
     [color, ink_light, ink_dark]: [[u8; 3]; 3],
     repo: &'static str,
 ) -> CraftApp {
-    CraftApp { id, name, tagline, group, color, ink_light, ink_dark, repo, former_ids: &[] }
+    CraftApp { id, name, tagline, group, color, ink_light, ink_dark, repo, former_ids: &[], former_names: &[] }
 }
 
 /// The Craft App Suite, in display order: the seven classic apps, then the five new ones.
@@ -123,6 +130,7 @@ pub const SUITE: [CraftApp; 12] = [
     ),
     CraftApp {
         former_ids: &["printcraft"],
+        former_names: &["PrintCraft"],
         ..app(
             "pdfcraft",
             "PdfCraft",
@@ -248,6 +256,7 @@ mod tests {
     fn pdfcraft_also_answers_to_printcraft() {
         let pdf = CraftApp::by_id("pdfcraft").unwrap();
         assert_eq!(pdf.stems().collect::<Vec<_>>(), ["pdfcraft", "printcraft"]);
+        assert_eq!(pdf.names().collect::<Vec<_>>(), ["PdfCraft", "PrintCraft"]);
         assert_eq!(pdf.website(), "https://getartcraft.com/apps/pdfcraft");
         assert_eq!(CraftApp::by_id("wordcraft").unwrap().website(), "https://getartcraft.com/apps/wordcraft");
     }
