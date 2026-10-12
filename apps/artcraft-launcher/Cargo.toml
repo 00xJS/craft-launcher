@@ -31,6 +31,9 @@ notify-rust = "4"
 ron = "0.12.2"
 serde = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5"
+
 # The tray (menu bar) icon. On Linux and the BSDs the StatusNotifierItem backend talks D-Bus
 # directly, so no GTK or libappindicator is needed.
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
