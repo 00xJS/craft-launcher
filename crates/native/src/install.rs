@@ -746,6 +746,7 @@ pub(crate) mod linux {
             "gridcraft" => include_bytes!("../../../assets/app-icons/gridcraft.png"),
             "cadcraft" => include_bytes!("../../../assets/app-icons/cadcraft.png"),
             "soundcraft" => include_bytes!("../../../assets/app-icons/soundcraft.png"),
+            "figcraft" => include_bytes!("../../../assets/app-icons/figcraft.png"),
             _ => return None,
         })
     }
