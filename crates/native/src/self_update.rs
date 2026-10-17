@@ -78,7 +78,7 @@ pub fn just_updated_to(paths: &Paths, release: &Release) -> bool {
     let Ok(text) = std::fs::read_to_string(marker(paths)) else { return false };
     let mut lines = text.lines();
     let (Some(tag), Some(at)) = (lines.next(), lines.next().and_then(|a| a.parse::<i64>().ok())) else { return false };
-    tag == release.tag && crate::now() - at < JUST_UPDATED_FOR
+    tag == release.tag && crate::now().checked_sub(at).is_some_and(|age| (0..JUST_UPDATED_FOR).contains(&age))
 }
 
 fn marker(paths: &Paths) -> PathBuf {
@@ -292,6 +292,26 @@ fn ps_quote_arg(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_corrupt_self_update_timestamp_does_not_overflow() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let release = Release { tag: "v0.2.0".into(), ..Release::default() };
+        crate::paths::write_atomic(&marker(&paths), format!("v0.2.0\n{}\n", i64::MIN).as_bytes()).unwrap();
+        assert!(!just_updated_to(&paths, &release));
+    }
+
+    #[test]
+    fn a_future_self_update_timestamp_does_not_suppress_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let release = Release { tag: "v0.2.0".into(), ..Release::default() };
+        for at in [crate::now() + JUST_UPDATED_FOR, i64::MAX] {
+            crate::paths::write_atomic(&marker(&paths), format!("v0.2.0\n{at}\n").as_bytes()).unwrap();
+            assert!(!just_updated_to(&paths, &release), "future timestamp {at}");
+        }
+    }
 
     #[test]
     fn a_version_just_installed_is_not_offered_again() {
