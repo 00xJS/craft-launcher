@@ -200,15 +200,7 @@ pub fn update(
             relaunch_after_exit(pid, &[exe.as_os_str()])
         }
         #[cfg(windows)]
-        Install::Msi(exe) => windows_helper(
-            pid,
-            &format!(
-                "Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\msiexec.exe') -ArgumentList '/i',{},'/passive','/norestart' -Wait; Remove-Item -LiteralPath {} -ErrorAction SilentlyContinue",
-                ps_quote_arg(&file),
-                ps_quote(&file)
-            ),
-            exe,
-        ),
+        Install::Msi(exe) => windows_helper(pid, &msi_update_step(&file)?, exe),
         #[cfg(windows)]
         Install::Portable(exe) => {
             let dir = exe.parent().ok_or("the launcher isn't in a folder")?;
@@ -289,9 +281,39 @@ fn ps_quote_arg(path: &Path) -> String {
     format!("'\"{}\"'", path.display().to_string().replace('\'', "''"))
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
+fn msi_update_step(file: &Path) -> Result<String, String> {
+    let file = install::msi_path(file)?;
+    Ok(format!(
+        "Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\msiexec.exe') -ArgumentList '/i',{},'/passive','/norestart' -Wait; Remove-Item -LiteralPath {} -ErrorAction SilentlyContinue",
+        ps_quote_arg(&file),
+        ps_quote(&file)
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn msi_self_update_uses_the_target_of_a_symlinked_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Launcher O'Brien.msi");
+        std::fs::write(&file, b"test package").unwrap();
+        let link = dir.path().join("cached.msi");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+        let step = msi_update_step(&link).unwrap();
+        let target = file.canonicalize().unwrap();
+        assert!(step.contains(&format!("-ArgumentList '/i',{},", ps_quote_arg(&target))), "{step}");
+        assert!(step.contains(&format!("Remove-Item -LiteralPath {} ", ps_quote(&target))), "{step}");
+    }
+
+    #[test]
+    fn a_missing_msi_cannot_schedule_a_self_update() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(msi_update_step(&dir.path().join("missing.msi")).is_err());
+    }
 
     #[test]
     fn a_corrupt_self_update_timestamp_does_not_overflow() {

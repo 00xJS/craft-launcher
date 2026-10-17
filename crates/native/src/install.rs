@@ -1341,6 +1341,28 @@ mod freebsd {
     }
 }
 
+/// Builds the Windows Installer command separately so its package argument can be checked
+/// without starting an installer.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn msi_command(program: &Path, msi: &Path) -> Result<std::process::Command, String> {
+    let msi = msi_path(msi)?;
+    let mut command = process::command(program);
+    command.arg("/i").arg(msi).args(["/passive", "/norestart"]);
+    Ok(command)
+}
+
+/// Windows Installer's storage APIs can fail on paths through junctions or symlinks (#338).
+/// Keep ordinary drive/UNC syntax when possible: Windows canonicalization alone introduces
+/// a `\\?\` prefix that older APIs also cannot handle.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn msi_path(msi: &Path) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let resolved = dunce::canonicalize(msi);
+    #[cfg(not(windows))]
+    let resolved = std::fs::canonicalize(msi);
+    resolved.map_err(|e| format!("couldn't resolve the Windows Installer package {} ({e})", msi.display()))
+}
+
 #[cfg(windows)]
 pub mod windows {
     use artcraft_launcher_core::protocol::CANCELLED;
@@ -1366,8 +1388,7 @@ pub mod windows {
     pub fn run_msi(msi: &Path, destination: Option<&Path>, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         in_turn(stop, phase, JobPhase::Installing, || {
             use std::os::windows::process::CommandExt;
-            let mut command = process::command(msiexec());
-            command.arg("/i").arg(msi).args(["/passive", "/norestart"]);
+            let mut command = msi_command(&msiexec(), msi)?;
             if let Some(dir) = destination {
                 command.raw_arg(msi_folder_argument(dir)?);
             }
@@ -1403,6 +1424,48 @@ pub mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn msi_install_uses_the_package_target_instead_of_a_symlinked_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("persistent cache");
+        std::fs::create_dir(&cache).unwrap();
+        let file = cache.join("PhotoCraft.msi");
+        std::fs::write(&file, b"test package").unwrap();
+        let link = dir.path().join("current cache");
+        std::os::unix::fs::symlink(&cache, &link).unwrap();
+        let command = msi_command(Path::new("msiexec.exe"), &link.join("PhotoCraft.msi")).unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                std::ffi::OsStr::new("/i"),
+                file.canonicalize().unwrap().as_os_str(),
+                std::ffi::OsStr::new("/passive"),
+                std::ffi::OsStr::new("/norestart")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unavailable_msi_is_refused_before_starting_the_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.msi");
+        let error = msi_command(Path::new("msiexec.exe"), &missing).unwrap_err();
+        assert!(error.contains("couldn't resolve the Windows Installer package"), "{error}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_short_local_msi_path_keeps_ordinary_windows_syntax() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("package.msi");
+        std::fs::write(&file, b"test package").unwrap();
+        let resolved = msi_path(&file).unwrap();
+        assert!(!resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"), "{resolved:?}");
+        assert_eq!(std::fs::read(resolved).unwrap(), b"test package");
+    }
 
     #[test]
     fn selected_folders_must_exist_and_leave_no_probe_files() {
