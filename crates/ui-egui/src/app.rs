@@ -552,6 +552,9 @@ impl LauncherUi {
     /// Draws the launcher.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) {
         let ctx = ui.ctx().clone();
+        if host.title_bar() == TitleBar::MacOs && ctx.input_mut(|i| i.consume_key(egui::Modifiers::MAC_CMD, egui::Key::M)) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         // Set the current language for this frame based on settings.
         let lang = effective_lang(&self.settings.language);
         set_current(lang);

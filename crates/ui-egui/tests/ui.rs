@@ -1746,6 +1746,25 @@ fn changelog_shortcuts_zoom_only_the_notes_text() {
 }
 
 #[test]
+fn command_m_minimizes_the_mac_window_only() {
+    use artcraft_launcher_ui_egui::TitleBar;
+    for bar in [TitleBar::MacOs, TitleBar::Native, TitleBar::Custom] {
+        let (mut h, _) = harness_with_title_bar(events(), ViewMode::Grid, egui::Theme::Dark, true, 1.0, bar);
+        h.run_steps(4);
+        h.input_mut().events.push(egui::Event::Key {
+            key: egui::Key::M,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::MAC_CMD,
+        });
+        h.step();
+        let minimized = h.output().viewport_output.values().any(|v| v.commands.iter().any(|c| matches!(c, egui::ViewportCommand::Minimized(true))));
+        assert_eq!(minimized, bar == TitleBar::MacOs, "{bar:?}");
+    }
+}
+
+#[test]
 fn an_occupied_folder_asks_before_replacing_it() {
     let path = "/Volumes/Craft Apps/PhotoCraft.app";
     let mut ev = events();
