@@ -117,6 +117,8 @@ pub struct LauncherUi {
     pub(crate) search: String,
     pub(crate) toasts: Vec<Toast>,
     pub(crate) dialog: Option<Dialog>,
+    /// Release-note text scale for this session, independent of the main UI zoom.
+    pub(crate) notes_zoom: f32,
     /// The app whose details drawer is open (or closing: see `detail_shown`).
     pub(crate) detail: Option<String>,
     /// The app the drawer is drawn for: it outlives `detail` while the drawer slides out.
@@ -190,6 +192,7 @@ impl LauncherUi {
             search: String::new(),
             toasts: Vec::new(),
             dialog: None,
+            notes_zoom: 1.0,
             detail: None,
             detail_shown: None,
             detail_shot: 0,
@@ -523,6 +526,29 @@ impl LauncherUi {
         }
     }
 
+    fn zoom_input(&mut self, ctx: &egui::Context) {
+        use egui::gui_zoom::kb_shortcuts;
+        let notes_open = matches!(self.dialog, Some(Dialog::Notes(_)));
+        let (delta, zoom_in, zoom_out, reset) = ctx.input_mut(|i| {
+            let delta = i.zoom_delta();
+            let reset = notes_open && i.consume_shortcut(&kb_shortcuts::ZOOM_RESET);
+            let zoom_in = notes_open && (i.consume_shortcut(&kb_shortcuts::ZOOM_IN) || i.consume_shortcut(&kb_shortcuts::ZOOM_IN_SECONDARY));
+            let zoom_out = notes_open && i.consume_shortcut(&kb_shortcuts::ZOOM_OUT);
+            (delta, zoom_in, zoom_out, reset)
+        });
+        let delta = if delta.is_finite() && delta > 0.0 { delta } else { 1.0 };
+        if notes_open {
+            let step = match (zoom_in, zoom_out) {
+                (true, false) => 0.1,
+                (false, true) => -0.1,
+                _ => 0.0,
+            };
+            self.notes_zoom = if reset { 1.0 } else { ((self.notes_zoom + step) * delta).clamp(0.5, 3.0) };
+        } else if delta != 1.0 {
+            ctx.set_zoom_factor((ctx.zoom_factor() * delta).clamp(0.2, 5.0));
+        }
+    }
+
     /// Draws the launcher.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut dyn Host) {
         let ctx = ui.ctx().clone();
@@ -540,6 +566,7 @@ impl LauncherUi {
             ctx.request_repaint();
             return;
         }
+        self.zoom_input(&ctx);
         if self.applied_theme != Some(self.settings.theme) {
             theme::apply(&ctx, self.settings.theme);
             self.applied_theme = Some(self.settings.theme);

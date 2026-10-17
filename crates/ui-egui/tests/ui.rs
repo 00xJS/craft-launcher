@@ -1689,6 +1689,63 @@ fn with_animations_on_hovering_a_card_animates() {
 }
 
 #[test]
+fn control_wheel_zooms_the_main_ui() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(4);
+    let before = h.ctx.zoom_factor();
+    h.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: egui::vec2(0.0, 100.0),
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.step();
+    h.run_steps(2);
+    assert!(h.ctx.zoom_factor() > before);
+}
+
+#[test]
+fn changelog_shortcuts_zoom_only_the_notes_text() {
+    let (mut h, _) = harness(ViewMode::Grid, egui::Theme::Dark, true);
+    h.run_steps(4);
+    h.get_all_by_label("…").next().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label("Release notes").click();
+    h.run_steps(4);
+    let before = h.get_by_label("What's Changed").rect().height();
+    let global = h.ctx.zoom_factor();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Plus);
+    h.run_steps(3);
+    assert_eq!(h.ctx.zoom_factor(), global, "zooming notes must not resize the main UI");
+    assert!(h.get_by_label("What's Changed").rect().height() > before);
+
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num0);
+    h.run_steps(3);
+    assert!((h.get_by_label("What's Changed").rect().height() - before).abs() < 0.5);
+    h.input_mut().events.push(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        phase: egui::TouchPhase::Move,
+        delta: egui::vec2(0.0, 100.0),
+        modifiers: egui::Modifiers::COMMAND,
+    });
+    h.step();
+    h.run_steps(2);
+    assert_eq!(h.ctx.zoom_factor(), global);
+    let larger = h.get_by_label("What's Changed").rect().height();
+    assert!(larger > before);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Minus);
+    h.run_steps(3);
+    assert!(h.get_by_label("What's Changed").rect().height() < larger);
+    snapshot(&mut h, "notes-zoomed");
+    h.get_by_label("Close").click();
+    h.run_steps(3);
+    assert_eq!(h.ctx.zoom_factor(), global);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Equals);
+    h.run_steps(3);
+    assert!(h.ctx.zoom_factor() > global, "main-UI keyboard zoom should still work after closing notes");
+}
+
+#[test]
 fn an_occupied_folder_asks_before_replacing_it() {
     let path = "/Volumes/Craft Apps/PhotoCraft.app";
     let mut ev = events();

@@ -98,7 +98,7 @@ impl LauncherUi {
             if release.notes.is_empty() {
                 ui.label(tl!("These notes weren't fetched (GitHub's request limit was reached). They're on the release page."));
             } else {
-                crate::notes::show(ui, &release.notes);
+                crate::notes::show_scaled(ui, &release.notes, self.notes_zoom);
             }
         });
         ui.add_space(12.0);
