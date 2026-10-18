@@ -290,8 +290,7 @@ pub(crate) fn choose_kinds_with(
             return vec![k];
         }
     }
-    let mut kinds: Vec<PackageKind> =
-        preferred.iter().copied().filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)).collect();
+    let mut kinds: Vec<PackageKind> = preferred.iter().copied().filter(|k| available.contains(k)).collect();
     for k in available {
         if !kinds.contains(k) {
             kinds.push(*k);
@@ -2213,10 +2212,11 @@ mod tests {
     }
 
     #[test]
-    fn preferred_arch_package_honoured_when_can_pacman() {
+    fn unavailable_arch_package_not_selected_for_new_install() {
         let app = artcraft_launcher_core::CraftApp::by_id("filmcraft").unwrap();
-        assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[], true), vec![PackageKind::ArchPkg]);
+        assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[], true), Vec::<PackageKind>::new());
         assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[], false), Vec::<PackageKind>::new());
+        assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[PackageKind::ArchPkg], false), vec![PackageKind::ArchPkg]);
     }
 
     #[test]
