@@ -254,7 +254,7 @@ fn record(version: &str, kind: PackageKind, path: PathBuf, files: Vec<PathBuf>, 
 /// The package format to install `app` with: the format of the copy that's there (an update
 /// stays a `.deb` update), else the user's choice, else the best this system supports.
 pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
-    let available = available_kinds();
+    let mut available = available_kinds();
     if let Some(inst) = existing {
         let kind = match inst.source {
             InstallSource::Launcher => record.map(|r| r.kind),
@@ -266,7 +266,10 @@ pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, prefe
             // user's AUR helper (see `managed_elsewhere`); the launcher opens and removes them but
             // never replaces them.
             InstallSource::Pacman if is_release_arch_package(inst) => Some(PackageKind::ArchPkg),
-            InstallSource::Pacman => None,
+            InstallSource::Pacman => {
+                available.retain(|k| *k != PackageKind::ArchPkg);
+                None
+            }
             InstallSource::Flatpak => Some(PackageKind::Flatpak),
             InstallSource::AppImage => Some(PackageKind::AppImage),
             InstallSource::Binary => Some(PackageKind::TarGz),
@@ -2167,6 +2170,7 @@ mod tests {
         let installed = pacman("filmcraft-bin");
         assert!(managed_elsewhere(app, &installed, false).is_some());
         assert!(!choose_kinds(Some(&installed), None, &[]).contains(&PackageKind::ArchPkg));
+        assert!(!choose_kinds(Some(&installed), None, &[PackageKind::ArchPkg]).contains(&PackageKind::ArchPkg));
     }
 
     #[test]
