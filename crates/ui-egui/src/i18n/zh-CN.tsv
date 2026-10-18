@@ -315,6 +315,9 @@ figcraft	Interface design and prototyping	界面设计与原型制作
 @msg	{name} was removed	{name} 已卸载
 @msg	{name} is running. Quit it, then try again.	{name} 正在运行。请先退出，然后重试。
 @msg	{name} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu	{name} 是从 {repo} 软件仓库安装的（{pkg}）。请使用 sudo pacman -Syu 更新。
+@msg	{name} was installed from the AUR ({pkg}). Update it with {cmd}	{name} 是从 AUR 安装的（{pkg}）。请使用 {cmd} 更新。
+@msg	{name} was installed from the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg})	{name} 是从 AUR 安装的（{pkg}）。请使用您的 AUR 助手（例如：yay -S {pkg}）更新。
+@msg	your AUR helper (for example: yay -S {pkg})	您的 AUR 助手（例如：yay -S {pkg}）
 	Install folder	安装文件夹
 	Default install folder	默认安装文件夹
 	System default	系统默认

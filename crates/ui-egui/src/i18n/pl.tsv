@@ -296,6 +296,9 @@ filter	Installed	Zainstalowane
 @msg	{name} was removed	Usunięto {name}
 @msg	{name} is running. Quit it, then try again.	{name} jest uruchomiona. Zamknij ją i spróbuj ponownie.
 @msg	{name} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu	{name} została zainstalowana z repozytorium {repo} ({pkg}). Zaktualizuj ją poleceniem sudo pacman -Syu
+@msg	{name} was installed from the AUR ({pkg}). Update it with {cmd}	{name} została zainstalowana z AUR ({pkg}). Zaktualizuj ją poleceniem {cmd}
+@msg	{name} was installed from the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg})	{name} została zainstalowana z AUR ({pkg}). Zaktualizuj ją za pomocą swojego pomocnika AUR (na przykład: yay -S {pkg})
+@msg	your AUR helper (for example: yay -S {pkg})	twój pomocnik AUR (na przykład: yay -S {pkg})
 
 # Command IDs for menu items (@id)
 # Format: @id<TAB>command_id<TAB>translation

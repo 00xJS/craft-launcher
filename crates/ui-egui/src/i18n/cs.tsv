@@ -267,6 +267,9 @@ filter	Installed	Nainstalováno
 @msg	{name} was removed	Aplikace {name} byla odebrána
 @msg	{name} is running. Quit it, then try again.	Aplikace {name} je spuštěná. Ukončete ji a zkuste to znovu.
 @msg	{name} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu	Aplikace {name} byla nainstalována z repozitáře {repo} ({pkg}). Aktualizujte ji příkazem sudo pacman -Syu
+@msg	{name} was installed from the AUR ({pkg}). Update it with {cmd}	Aplikace {name} byla nainstalována z AUR ({pkg}). Aktualizujte ji příkazem {cmd}
+@msg	{name} was installed from the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg})	Aplikace {name} byla nainstalována z AUR ({pkg}). Aktualizujte ji pomocí pomocníka AUR (například: yay -S {pkg})
+@msg	your AUR helper (for example: yay -S {pkg})	pomocník AUR (například: yay -S {pkg})
 @id	app.install	Nainstalovat
 @id	app.update	Aktualizovat na {v}
 @id	app.open	Otevřít
