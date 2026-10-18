@@ -52,11 +52,11 @@ impl LauncherUi {
         let footer_h = if stack_actions { 2.0 * theme::CONTROL_H + ui.spacing().item_spacing.y } else { theme::CONTROL_H } + 32.0;
         let body_h = (size.y - hero_h - footer_h - 2.0).max(0.0);
 
-        let wide = size.x >= sheet::WIDE_FROM;
-        let saved = sheet::accent_scroll(ui, &t);
+        let wide = size.x >= theme::DIALOG_COLUMNS_FROM;
+        let saved = sheet::accent_scroll(ui, &t, t.accent);
         egui::ScrollArea::vertical().id_salt("settings-body").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
             *ui.visuals_mut() = saved;
-            egui::Frame::new().inner_margin(egui::Margin::same(24)).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin::same(theme::PAD as i8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 self.settings_contents(ui, host, wide);
             });
@@ -65,7 +65,7 @@ impl LauncherUi {
         let rule_y = ui.cursor().top();
         ui.painter().hline(ui.max_rect().x_range(), rule_y, t.hairline());
         let mut close = false;
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(theme::PAD as i8, 16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             let quit = |ui: &mut Ui, host: &mut dyn Host| {
                 if self.caps.manage_apps && widgets::button(ui, tl!("Quit ArtCraft Launcher"), Kind::Secondary, 0.0).clicked() {
@@ -96,7 +96,7 @@ impl LauncherUi {
         sheet::columns(
             ui,
             wide,
-            24.0,
+            theme::COLUMN_GAP,
             |ui| {
                 let (this, _) = &mut *state.borrow_mut();
                 this.settings_language(ui);
@@ -281,10 +281,8 @@ impl LauncherUi {
                     ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB_URL));
                 }
                 // Wrap the social links as a group so their icons stay together.
-                let count = artcraft_launcher_core::catalog::SOCIAL.len() as f32;
-                let width = count * (16.0 + 8.0) + (count - 1.0).max(0.0) * 4.0;
+                let width = widgets::icon_links_width(artcraft_launcher_core::catalog::SOCIAL.len(), 16.0);
                 ui.allocate_ui_with_layout(vec2(width, theme::CONTROL_H), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
                     widgets::social_icons(ui, 16.0);
                 });
             });

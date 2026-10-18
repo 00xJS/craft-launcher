@@ -19,7 +19,7 @@ use crate::widgets::{self, Glyph, Kind};
 
 /// Screenshots are 8:5.
 const SHOT_ASPECT: f32 = 0.625;
-const PAD: f32 = 24.0;
+const PAD: f32 = theme::PAD;
 /// As tall as the name, headline, "Like …" and version lines beside it, so the icon fills the row.
 const ICON: f32 = 112.0;
 /// The previous / next buttons over a picture.
@@ -121,7 +121,7 @@ impl LauncherUi {
         let width = (area.width() - 64.0).clamp(480.0, 1280.0).min((area.width() - 16.0).max(1.0));
         let height = (area.height() - 40.0).clamp(320.0, 1000.0).min((area.height() - 8.0).max(1.0));
         // Wide enough, the page reads in two columns: the pictures and the story, then the facts.
-        let wide = width >= 900.0;
+        let wide = width >= theme::PAGE_COLUMNS_FROM;
         let panel = Rect::from_center_size(area.center() + vec2(0.0, (1.0 - k) * 24.0), vec2(width, height));
         let (previous, next) = self.neighbour_apps(&id);
         self.details_scrim(ctx, area, k, &t);
@@ -134,20 +134,8 @@ impl LauncherUi {
 
             ui.set_min_size(panel.size());
             ui.set_max_size(panel.size());
-            // A bar that stays on screen says there is more below the fold. egui's default one is
-            // floating and invisible until the pointer is over it, so the page uses the solid style,
-            // and draws it in the app's colour so it stands out from the page.
-            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-            ui.spacing_mut().scroll.bar_width = 10.0;
-            let page_visuals = ui.visuals().clone();
-            let bar = t.app_ink(entry.app);
-            {
-                let v = ui.visuals_mut();
-                v.extreme_bg_color = t.bg.blend(tint(bar, if t.dark { 0.14 } else { 0.10 }));
-                v.widgets.inactive.bg_fill = bar.gamma_multiply(0.8);
-                v.widgets.hovered.bg_fill = bar;
-                v.widgets.active.bg_fill = bar;
-            }
+            // A bar that stays on screen says there is more below the fold; in the app's colour.
+            let page_visuals = crate::sheet::accent_scroll(ui, &t, t.app_ink(entry.app));
             // One scroll position per app, so the next app opens at its top.
             egui::ScrollArea::vertical().id_salt(("details-scroll", id.clone())).auto_shrink([false, false]).show(ui, |ui| {
                 // The bar's colours are for the bar alone.
@@ -161,7 +149,7 @@ impl LauncherUi {
                     if wide && details.shots.is_empty() {
                         // No pictures to fill the left side: the story and features share it, and the
                         // release facts take the right, so neither side is left empty.
-                        let gap = 32.0;
+                        let gap = theme::COLUMN_GAP;
                         let total = ui.available_width();
                         let left_w = ((total - gap) * 0.58).floor();
                         let right_w = total - gap - left_w;
@@ -183,7 +171,7 @@ impl LauncherUi {
                             });
                         });
                     } else if wide {
-                        let gap = 32.0;
+                        let gap = theme::COLUMN_GAP;
                         let total = ui.available_width();
                         let left_w = ((total - gap) * 0.58).floor();
                         let right_w = total - gap - left_w;
@@ -326,7 +314,7 @@ impl LauncherUi {
                 ui.vertical(|ui| {
                     ui.set_width(text_w);
                     ui.spacing_mut().item_spacing.y = 5.0;
-                    widgets::wordmark(ui, app, 32.0);
+                    widgets::wordmark(ui, app, theme::PAGE_TITLE);
                     ui.add(egui::Label::new(RichText::new(details.headline).size(15.0).color(t.ink)).wrap());
                     // "Version 0.5.0 · Oct 8, 2026", or the installed-versus-latest line.
                     let version = crate::views::version_line(entry, &status);
@@ -380,7 +368,7 @@ impl LauncherUi {
         for pair in facts.chunks(per_row) {
             ui.columns(per_row, |cols| {
                 for (col, (label, value)) in cols.iter_mut().zip(pair) {
-                    egui::Frame::new().stroke(t.hairline()).inner_margin(Margin::same(12)).show(col, |ui| {
+                    egui::Frame::new().stroke(t.hairline()).inner_margin(theme::BOX_MARGIN).show(col, |ui| {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing.y = 2.0;
                         widgets::hud(ui, label, t.faint);
@@ -567,7 +555,7 @@ fn features(ui: &mut Ui, details: &AppDetails, app: &CraftApp, t: &Tokens) {
     widgets::eyebrow(ui, "01", tl!("Features"));
     ui.add_space(4.0);
     for (i, f) in details.features.iter().enumerate() {
-        egui::Frame::new().stroke(t.hairline()).inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| {
+        egui::Frame::new().stroke(t.hairline()).inner_margin(theme::BOX_MARGIN).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 3.0;
             ui.horizontal(|ui| {

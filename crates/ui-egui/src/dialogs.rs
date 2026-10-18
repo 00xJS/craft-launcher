@@ -23,7 +23,7 @@ impl LauncherUi {
         let modal = egui::Modal::new(egui::Id::new("dialog").with(dialog.key())).frame(if large {
             crate::sheet::frame(&t)
         } else {
-            egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(theme::shadow(&t)).inner_margin(24)
+            egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(theme::shadow(&t)).inner_margin(theme::PAD as i8)
         });
         let mut close = false;
         let response = match &mut dialog {
@@ -45,8 +45,9 @@ impl LauncherUi {
     fn alert_popup(&mut self, ctx: &egui::Context) {
         let Some(alert) = self.alerts.iter().find(|a| !self.settings.dismissed_notices.contains(&a.id)).cloned() else { return };
         let t = Tokens::get(ctx);
-        let modal = egui::Modal::new(egui::Id::new("feed_alert").with(&alert.id))
-            .frame(egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(theme::shadow(&t)).inner_margin(24));
+        let modal = egui::Modal::new(egui::Id::new("feed_alert").with(&alert.id)).frame(
+            egui::Frame::new().fill(t.bg).stroke(egui::Stroke::new(1.0, t.line_strong)).shadow(theme::shadow(&t)).inner_margin(theme::PAD as i8),
+        );
         let mut ok = false;
         modal.show(ctx, |ui| {
             ui.set_width(440.0f32.min(ctx.content_rect().width() - 80.0));
@@ -83,7 +84,7 @@ impl LauncherUi {
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                ui.label(widgets::heading(title, 22.0, t.ink_strong));
+                ui.label(widgets::heading(title, theme::DIALOG_TITLE, t.ink_strong));
                 if !subtitle.is_empty() {
                     widgets::hud(ui, subtitle, t.faint);
                 }
@@ -104,10 +105,10 @@ impl LauncherUi {
         let hero_h = crate::sheet::hero(ui, crate::icons::app(id), &format!("{} {}", entry.app.name, release.version_label()), &date, |_| {});
         let footer_h = theme::CONTROL_H + 32.0;
         let body_h = (size.y - hero_h - footer_h - 2.0).max(0.0);
-        let saved = crate::sheet::accent_scroll(ui, &t);
+        let saved = crate::sheet::accent_scroll(ui, &t, t.accent);
         egui::ScrollArea::vertical().id_salt("notes-body").max_height(body_h).auto_shrink([false, true]).show(ui, |ui| {
             *ui.visuals_mut() = saved;
-            egui::Frame::new().inner_margin(egui::Margin::same(24)).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin::same(theme::PAD as i8)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 if release.notes.is_empty() {
                     ui.label(tl!("These notes weren't fetched (GitHub's request limit was reached). They're on the release page."));
@@ -118,7 +119,7 @@ impl LauncherUi {
         });
         ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), t.hairline());
         let mut close = false;
-        egui::Frame::new().inner_margin(egui::Margin::symmetric(24, 16)).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(theme::PAD as i8, 16)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 widgets::hud_link(ui, tl!("Open on GitHub"), &release.html_url);

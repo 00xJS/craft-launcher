@@ -185,7 +185,7 @@ impl LauncherUi {
                     self.settings.filter = if showing { Filter::All } else { Filter::Hidden };
                 }
             }
-            compact = ui.available_width() < 640.0;
+            compact = ui.available_width() < theme::TOOLBAR_COMPACT_BELOW;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Right to left: the view switch at the far right, then the search.
                 crate::bar::view_toggle(ui, &mut self.settings.view, [tl!("Show apps as cards"), tl!("Show apps as a table")]);
@@ -215,8 +215,9 @@ impl LauncherUi {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if self.settings.view == ViewMode::Grid {
-                    self.sort_picker(ui);
+                    // "Sort" before the picker, as in the full-width row.
                     widgets::hud(ui, tl!("Sort"), t.faint);
+                    self.sort_picker(ui);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.caps.manage_apps && updates > 0 {
@@ -331,15 +332,12 @@ impl LauncherUi {
             tip: fmt(tl!("ArtCraft on {name}"), &[("name", name)]),
             url,
         }));
-        let (icon, pad) = (13.0, 7.0);
+        let icon = 13.0;
         let spacing = ui.spacing().item_spacing.x;
         // The icons on the right keep their size; the status on the left gets what is left and
         // is cut short with "…", never drawn under them.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                widgets::icon_links(ui, icon, pad, &links);
-            });
+            widgets::icon_links(ui, icon, &links);
             ui.add_space(8.0);
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 // While GitHub is rate limited, saying so matters more than when we last checked.
@@ -412,13 +410,8 @@ impl LauncherUi {
         // colours while the pointer is over its card.
         let installed = entry.status(self.platform, self.caps.manage_apps).is_installed();
         let in_colour = installed || hovered;
-        let app_color = if installed {
-            rgb(app.color)
-        } else {
-            let c = rgb(app.color);
-            let grey = Color32::from_gray((0.299 * f32::from(c.r()) + 0.587 * f32::from(c.g()) + 0.114 * f32::from(c.b())).round() as u8);
-            grey.lerp_to_gamma(c, lift)
-        };
+        // The text and accent use the theme's muted grey; the icon is a grey copy of itself.
+        let app_color = if installed { rgb(app.color) } else { t.muted.lerp_to_gamma(rgb(app.color), lift) };
         // The whole card opens the app's page. Added before the card's own links and buttons, so
         // they sit on top of it and keep their clicks.
         if AppDetails::by_id(id).is_some() {
@@ -958,7 +951,7 @@ const GRID_SORTS: [(SortKey, bool); 4] = [(SortKey::Name, false), (SortKey::Name
 
 /// Which of [`GRID_SORTS`] the settings come to. Anything else (the old suite order, a table
 /// column) reads as Name, A to Z.
-fn grid_sort_now(s: &crate::settings::Settings) -> (SortKey, bool) {
+pub(crate) fn grid_sort_now(s: &crate::settings::Settings) -> (SortKey, bool) {
     match s.sort {
         SortKey::Name => (SortKey::Name, s.sort_descending),
         SortKey::Released => (SortKey::Released, true),

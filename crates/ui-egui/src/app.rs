@@ -661,17 +661,9 @@ impl LauncherUi {
             .collect();
         let platform = self.platform;
         let manage = self.caps.manage_apps;
-        // The grid offers Name and Recently updated only; a table column's sort (or the old suite
-        // order) reads as Name there.
+        // The grid offers its own few orders (`views::grid_sort_now`); the table sorts by its columns.
         let grid = self.settings.view == ViewMode::Grid;
-        let (sort, desc) = match self.settings.sort {
-            SortKey::Name => (SortKey::Name, self.settings.sort_descending),
-            // Newest and most opened first, whatever the table's columns last did.
-            SortKey::Released | SortKey::Frequent if grid => (self.settings.sort, true),
-            SortKey::Released | SortKey::Frequent => (self.settings.sort, self.settings.sort_descending),
-            _ if grid => (SortKey::Name, false),
-            other => (other, self.settings.sort_descending),
-        };
+        let (sort, desc) = if grid { crate::views::grid_sort_now(&self.settings) } else { (self.settings.sort, self.settings.sort_descending) };
         let dir = |o: std::cmp::Ordering| if desc { o.reverse() } else { o };
         // Empty cells (not installed, no release) go last whichever way the column sorts.
         let opt = |a: Option<std::cmp::Ordering>, a_some: bool, b_some: bool| match (a_some, b_some) {
@@ -710,8 +702,11 @@ impl LauncherUi {
             // Ties keep suite order.
             ord.then(ia.cmp(ib))
         });
-        // Installed apps always come first (the sort holds within each group; the sort is stable).
-        list.sort_by_key(|(_, e)| !e.status(platform, manage).is_installed());
+        // The grid shows installed apps first, then the rest under "Not installed" (the sort holds
+        // within each group; the sort is stable). The table keeps the order its column gives.
+        if grid {
+            list.sort_by_key(|(_, e)| !e.status(platform, manage).is_installed());
+        }
         list.into_iter().map(|(_, e)| e.app.id).collect()
     }
 

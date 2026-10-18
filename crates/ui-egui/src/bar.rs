@@ -60,21 +60,28 @@ pub fn view_toggle(ui: &mut Ui, view: &mut ViewMode, tips: [&str; 2]) {
     }
 }
 
-/// The refresh control: a square in the same hairline box as the grid/table switch. While
-/// `busy` it shows a spinner and ignores clicks.
+/// The refresh control: a square in the same hairline box as the grid/table switch, and lit the
+/// same way on hover (sunken; the switch keeps inverted for the chosen view). While `busy` it shows
+/// a spinner and ignores clicks.
 pub fn refresh_button(ui: &mut Ui, tip: &str, busy: bool) -> egui::Response {
     let t = Tokens::get(ui.ctx());
     let (rect, resp) = ui.allocate_exact_size(vec2(theme::CONTROL_H, theme::CONTROL_H), if busy { Sense::hover() } else { Sense::click() });
     let hovered = resp.hovered() && !busy;
     let p = ui.painter();
     if hovered {
-        p.rect_filled(rect, CornerRadius::ZERO, t.invert_bg);
+        p.rect_filled(rect, CornerRadius::ZERO, t.sunken);
     }
     p.rect_stroke(rect, CornerRadius::ZERO, t.hairline(), egui::StrokeKind::Inside);
     if busy {
         egui::Spinner::new().size(16.0).color(t.muted).paint_at(ui, Rect::from_center_size(rect.center(), vec2(16.0, 16.0)));
     } else {
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, "\u{27f3}", egui::FontId::proportional(17.0), if hovered { t.invert_fg } else { t.muted });
+        p.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "\u{27f3}",
+            egui::FontId::proportional(17.0),
+            if hovered { t.ink_strong } else { t.muted },
+        );
     }
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !busy, tip));
     let resp = resp.on_hover_text(tip);

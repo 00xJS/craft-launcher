@@ -780,11 +780,12 @@ fn every_table_column_sorts_both_ways() {
     h.run_steps(3);
     let o = order(&h);
     assert_eq!(&o[..4], ["PhotoCraft", "EffectCraft", "LightCraft", "WordCraft"], "{o:?}");
-    // Reversed: the up to date ones first.
+    // Reversed: the apps not installed first, then up to date, then the updates last. The table
+    // keeps its column's order; only the grid puts installed apps above the rest.
     h.get_by_label("Status").click();
     h.run_steps(3);
     let o = order(&h);
-    assert_eq!(&o[..4], ["LightCraft", "WordCraft", "PhotoCraft", "EffectCraft"], "{o:?}");
+    assert_eq!(&o[o.len().saturating_sub(4)..], ["LightCraft", "WordCraft", "PhotoCraft", "EffectCraft"], "{o:?}");
     // The old Installed and Latest columns are gone; Version shows the number, and from and to for an update.
     assert!(h.query_by_label("Latest").is_none());
     h.get_by_label("Version");
