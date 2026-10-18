@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 
 use artcraft_launcher_core::protocol::{CANCELLED, INSTALL_CANCELLED, InstallLocations, JobPhase};
 use artcraft_launcher_core::release::{self, Asset, Release};
-use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind};
+use artcraft_launcher_core::{CraftApp, InstallSource, Installed, PackageKind, version};
 
 use crate::http::{Http, Stop, Transfer};
 use crate::manifest::Record;
@@ -81,6 +81,13 @@ pub fn install_at(
     {
         return Err(format!("{} is running. Quit it, then try again.", app.name));
     }
+    if !job.replace
+        && let Some(inst) = existing
+        && let (Some(rel_v), Some(inst_v)) = (release.version.as_ref(), inst.version.as_ref())
+        && version::is_newer(inst_v, rel_v)
+    {
+        return Err(format!("Cannot update {} to {}: installed version {} is newer", app.name, release.version_label(), inst_v));
+    }
     log::info!("{}: starting {} to {} ({})", app.name, if existing.is_some() { "update" } else { "install" }, release.version_label(), kind.label());
     let file = download(release, asset, job)?;
     log::info!("{}: download ready ({}), running installer...", app.name, file.display());
@@ -110,7 +117,9 @@ pub fn install_at(
             .map(Some)
         }
         #[cfg(target_os = "linux")]
-        PackageKind::Deb | PackageKind::Rpm | PackageKind::Flatpak => linux::install_package(kind, &file, job.stop, &mut *job.phase).map(|_| None),
+        PackageKind::Deb | PackageKind::Rpm | PackageKind::ArchPkg | PackageKind::Flatpak => {
+            linux::install_package(kind, &file, job.stop, &mut *job.phase).map(|_| None)
+        }
         #[cfg(target_os = "linux")]
         PackageKind::AppImage => {
             linux::install_appimage(&file, &asset.name, destination.as_deref(), previous, job.replace).map(|(path, replaced)| {
@@ -246,6 +255,7 @@ fn record(version: &str, kind: PackageKind, path: PathBuf, files: Vec<PathBuf>, 
 /// stays a `.deb` update), else the user's choice, else the best this system supports.
 pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
     let available = available_kinds();
+    let can_pacman = which("pacman").is_some();
     if let Some(inst) = existing {
         let kind = match inst.source {
             InstallSource::Launcher => record.map(|r| r.kind),
@@ -253,18 +263,17 @@ pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, prefe
             InstallSource::Msi => Some(PackageKind::Msi),
             InstallSource::Deb => Some(PackageKind::Deb),
             InstallSource::Rpm => Some(PackageKind::Rpm),
-            // Arch/AUR installs are owned by pacman and updated by the user's AUR helper (see
-            // `managed_elsewhere`); the launcher opens and removes them but never replaces them.
-            InstallSource::Pacman => None,
+            InstallSource::Pacman => Some(PackageKind::ArchPkg),
             InstallSource::Flatpak => Some(PackageKind::Flatpak),
             InstallSource::AppImage => Some(PackageKind::AppImage),
             InstallSource::Binary => Some(PackageKind::TarGz),
         };
-        if let Some(k) = kind.filter(|k| available.contains(k)) {
+        if let Some(k) = kind.filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)) {
             return vec![k];
         }
     }
-    let mut kinds: Vec<PackageKind> = preferred.iter().copied().filter(|k| available.contains(k)).collect();
+    let mut kinds: Vec<PackageKind> =
+        preferred.iter().copied().filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)).collect();
     for k in available {
         if !kinds.contains(&k) {
             kinds.push(k);
@@ -333,12 +342,16 @@ pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool)
     match installed.source {
         InstallSource::Pacman if !uninstall => {
             let pkg = installed.package.clone().unwrap_or_else(|| app.id.to_string());
-            let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
-            let cmd = match helper {
-                Some(h) => format!("{h} -S {pkg}"),
-                None => format!("your AUR helper (for example: yay -S {pkg})"),
-            };
-            Some(format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name))
+            if pkg.ends_with("-git") || which("pacman").is_none() {
+                let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
+                let cmd = match helper {
+                    Some(h) => format!("{h} -S {pkg}"),
+                    None => format!("your AUR helper (for example: yay -S {pkg})"),
+                };
+                Some(format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name))
+            } else {
+                None
+            }
         }
         InstallSource::Binary => Some(format!("{} was installed outside the launcher. Update or remove it the way it was installed.", app.name)),
         _ => None,
@@ -663,6 +676,7 @@ pub(crate) mod linux {
             PackageKind::Rpm if which("dnf").is_some() => Some(&["dnf", "install", "-y"]),
             PackageKind::Rpm if which("zypper").is_some() => Some(&["zypper", "--non-interactive", "install", "--allow-unsigned-rpm"]),
             PackageKind::Rpm => Some(&["rpm", "-U", "--replacepkgs"]),
+            PackageKind::ArchPkg => Some(&["pacman", "-U", "--noconfirm"]),
             _ => None,
         }
     }
@@ -682,8 +696,9 @@ pub(crate) mod linux {
     ///   AppImage cannot mount there and a distro package needs root, so both are dead ends.
     /// - Running as an AppImage: prefers AppImage.
     /// - Otherwise (system install): prefers the distro's own package format (`.deb` on the
-    ///   Debian family, `.rpm` on the Fedora, Red Hat and SUSE families, read from `os-release`
-    ///   rather than from whichever tools are on `PATH`), then Flatpak if available, then AppImage.
+    ///   Debian family, `.rpm` on the Fedora, Red Hat and SUSE families, `.pkg.tar.zst` on Arch,
+    ///   read from `os-release` rather than from whichever tools are on `PATH`), then Flatpak if
+    ///   available, then AppImage.
     pub fn available_kinds() -> Vec<PackageKind> {
         let flatpak = process::is_flatpak_available();
         let is_flatpak = process::in_sandbox();
@@ -695,7 +710,8 @@ pub(crate) mod linux {
         let root = root && !immutable_ostree();
         let can_deb = root && native == Some(PackageKind::Deb) && which("apt-get").is_some() && which("dpkg").is_some();
         let can_rpm = root && native == Some(PackageKind::Rpm) && which("rpm").is_some();
-        order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm)
+        let can_arch = root && native == Some(PackageKind::ArchPkg) && which("pacman").is_some();
+        order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm, can_arch)
     }
 
     pub(crate) fn order_available_kinds(
@@ -704,6 +720,7 @@ pub(crate) mod linux {
         flatpak_available: bool,
         can_deb: bool,
         can_rpm: bool,
+        can_arch: bool,
     ) -> Vec<PackageKind> {
         let mut kinds = Vec::new();
         if is_flatpak && flatpak_available {
@@ -719,6 +736,9 @@ pub(crate) mod linux {
         }
         if can_rpm {
             kinds.push(PackageKind::Rpm);
+        }
+        if can_arch {
+            kinds.push(PackageKind::ArchPkg);
         }
 
         if flatpak_available && !kinds.contains(&PackageKind::Flatpak) {
@@ -738,6 +758,9 @@ pub(crate) mod linux {
     pub fn install_package(kind: PackageKind, file: &Path, stop: &Stop, phase: &mut dyn FnMut(JobPhase)) -> Result<(), String> {
         if kind == PackageKind::Deb && which("apt-get").is_none() {
             return Err("this system has no apt-get to install a Debian package with".into());
+        }
+        if kind == PackageKind::ArchPkg && which("pacman").is_none() {
+            return Err("this system has no pacman to install an Arch package with".into());
         }
         install_package_via(&SYSTEM, kind, file, stop, phase)
     }
@@ -2069,45 +2092,71 @@ mod tests {
         let _ = inst;
     }
 
+    #[test]
+    fn install_refuses_to_downgrade_when_target_release_is_older() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let http = Http::new().unwrap();
+        let phase = &mut |_| ();
+        let locations = InstallLocations::default();
+        let app = CraftApp::by_id("photocraft").unwrap();
+        let release = Release { version: version::parse("0.4.0"), tag: "v0.4.0".into(), ..Release::default() };
+        let asset = Asset { name: "photocraft-0.4.0-linux-x86_64.AppImage".into(), ..Asset::default() };
+        let installed = Installed {
+            version: version::parse("0.5.0"),
+            source: InstallSource::Launcher,
+            location: dir.path().join("PhotoCraft.AppImage").display().to_string(),
+            package: None,
+        };
+        let stop = Stop::default();
+        let mut job = Job { http: &http, paths: &paths, stop: &stop, phase, install_locations: &locations, replace: false };
+        let result = install_at(app, &release, &asset, PackageKind::AppImage, Some(&installed), None, &mut job, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("installed version 0.5.0 is newer"));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn package_kinds_order_matches_launcher_format() {
         use super::linux::order_available_kinds;
 
         // Flatpak launcher defaults to Flatpak if available
-        let kinds = order_available_kinds(true, false, true, true, false);
+        let kinds = order_available_kinds(true, false, true, true, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
         assert!(kinds.contains(&PackageKind::Deb));
         assert!(kinds.contains(&PackageKind::AppImage));
 
         // AppImage launcher defaults to AppImage
-        let kinds = order_available_kinds(false, true, true, true, false);
+        let kinds = order_available_kinds(false, true, true, true, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::AppImage));
         assert!(kinds.contains(&PackageKind::Deb));
         assert!(kinds.contains(&PackageKind::Flatpak));
 
-        // Base Linux launcher defaults to native package format (deb or rpm) if available
-        let kinds = order_available_kinds(false, false, true, true, false);
+        // Base Linux launcher defaults to native package format (deb, rpm, or arch) if available
+        let kinds = order_available_kinds(false, false, true, true, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Deb));
 
-        let kinds = order_available_kinds(false, false, true, false, true);
+        let kinds = order_available_kinds(false, false, true, false, true, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Rpm));
 
+        let kinds = order_available_kinds(false, false, true, false, false, true);
+        assert_eq!(kinds.first(), Some(&PackageKind::ArchPkg));
+
         // Base Linux launcher without root/distro packaging falls back to Flatpak then AppImage
-        let kinds = order_available_kinds(false, false, true, false, false);
+        let kinds = order_available_kinds(false, false, true, false, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
         assert_eq!(kinds.get(1), Some(&PackageKind::AppImage));
 
         // The tarball runs inside the sandbox, so it is only offered there: with a usable host
         // Flatpak it stays an alternative, without one it is the default (an AppImage cannot
         // mount in a sandbox, and a distro package needs root).
-        let kinds = order_available_kinds(true, false, true, false, false);
+        let kinds = order_available_kinds(true, false, true, false, false, false);
         assert_eq!(kinds.first(), Some(&PackageKind::Flatpak));
         assert_eq!(kinds.get(1), Some(&PackageKind::TarGz));
-        let kinds = order_available_kinds(true, false, false, false, false);
+        let kinds = order_available_kinds(true, false, false, false, false, false);
         assert_eq!(kinds, [PackageKind::TarGz, PackageKind::AppImage]);
         for (appimage, flatpak) in [(true, true), (false, false), (false, true)] {
-            assert!(!order_available_kinds(false, appimage, flatpak, true, true).contains(&PackageKind::TarGz));
+            assert!(!order_available_kinds(false, appimage, flatpak, true, true, false).contains(&PackageKind::TarGz));
         }
     }
 
