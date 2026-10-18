@@ -277,6 +277,7 @@ filter	Installed	Установлены
 @msg	{name} installed: {version} (this release publishes no checksum, so only its size was checked)	Приложение {name} установлено: {version} (в этом релизе нет контрольных сумм, поэтому проверен только размер)
 @msg	{name} was removed	Приложение {name} удалено
 @msg	{name} is running. Quit it, then try again.	Приложение {name} запущено. Закройте его и попробуйте снова.
+@msg	{name} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu	Приложение {name} установлено из репозитория {repo} ({pkg}). Обновите его командой sudo pacman -Syu
 
 # Command IDs for menu items (@id)
 # Format: @id<TAB>command_id<TAB>translation

@@ -255,7 +255,6 @@ fn record(version: &str, kind: PackageKind, path: PathBuf, files: Vec<PathBuf>, 
 /// stays a `.deb` update), else the user's choice, else the best this system supports.
 pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
     let available = available_kinds();
-    let can_pacman = which("pacman").is_some();
     if let Some(inst) = existing {
         let kind = match inst.source {
             InstallSource::Launcher => record.map(|r| r.kind),
@@ -263,23 +262,34 @@ pub fn choose_kinds(existing: Option<&Installed>, record: Option<&Record>, prefe
             InstallSource::Msi => Some(PackageKind::Msi),
             InstallSource::Deb => Some(PackageKind::Deb),
             InstallSource::Rpm => Some(PackageKind::Rpm),
-            InstallSource::Pacman => Some(PackageKind::ArchPkg),
+            // The release's own Arch package is updated like a .deb. AUR builds are updated by the
+            // user's AUR helper (see `managed_elsewhere`); the launcher opens and removes them but
+            // never replaces them.
+            InstallSource::Pacman if is_release_arch_package(inst) => Some(PackageKind::ArchPkg),
+            InstallSource::Pacman => None,
             InstallSource::Flatpak => Some(PackageKind::Flatpak),
             InstallSource::AppImage => Some(PackageKind::AppImage),
             InstallSource::Binary => Some(PackageKind::TarGz),
         };
-        if let Some(k) = kind.filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)) {
+        if let Some(k) = kind.filter(|k| available.contains(k)) {
             return vec![k];
         }
     }
-    let mut kinds: Vec<PackageKind> =
-        preferred.iter().copied().filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)).collect();
+    let mut kinds: Vec<PackageKind> = preferred.iter().copied().filter(|k| available.contains(k)).collect();
     for k in available {
         if !kinds.contains(&k) {
             kinds.push(k);
         }
     }
     kinds
+}
+
+/// Whether a pacman install is the release's own Arch package rather than an AUR build. The
+/// release names it by the bundle id (`ai.storyteller.wordcraft`), which no AUR package uses
+/// (they are `wordcraft`, `wordcraft-bin` and `wordcraft-git`), so an AUR helper never mistakes it
+/// for one of its own and rebuilds it from source.
+pub fn is_release_arch_package(installed: &Installed) -> bool {
+    installed.source == InstallSource::Pacman && installed.package.as_deref().is_some_and(|p| p.starts_with("ai.storyteller."))
 }
 
 /// Package formats this machine can install, best first.
@@ -335,27 +345,55 @@ fn published_checksum(release: &Release, asset: &Asset, http: &Http) -> Result<O
 }
 
 /// When `installed` is owned by something the launcher doesn't drive, what to tell the user
-/// instead of installing a second copy. AUR packages are removed through pacman like any system
-/// package, but updated by the user's AUR helper, which builds as the user and can't run behind
-/// the password prompt.
+/// instead of installing a second copy. Arch packages other than the release's own are removed
+/// through pacman like any system package, but updated by whatever they came from: a system
+/// update for a repository package (Omarchy's, Chaotic-AUR, ...), the user's AUR helper (which
+/// builds as the user and can't run behind the password prompt) for anything else.
 pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool) -> Option<String> {
     match installed.source {
-        InstallSource::Pacman if !uninstall => {
+        InstallSource::Pacman if !uninstall && !is_release_arch_package(installed) => {
             let pkg = installed.package.clone().unwrap_or_else(|| app.id.to_string());
-            if pkg.ends_with("-git") || which("pacman").is_none() {
-                let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
-                let cmd = match helper {
-                    Some(h) => format!("{h} -S {pkg}"),
-                    None => format!("your AUR helper (for example: yay -S {pkg})"),
-                };
-                Some(format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name))
-            } else {
-                None
-            }
+            Some(pacman_update_hint(app, &pkg, pacman_repo(&pkg).as_deref()))
         }
         InstallSource::Binary => Some(format!("{} was installed outside the launcher. Update or remove it the way it was installed.", app.name)),
         _ => None,
     }
+}
+
+/// How to update an Arch package the launcher doesn't own: `repo` is the sync repository it
+/// comes from, or `None` for a foreign (AUR) package.
+fn pacman_update_hint(app: &CraftApp, pkg: &str, repo: Option<&str>) -> String {
+    if let Some(repo) = repo {
+        return format!("{} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu", app.name);
+    }
+    let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
+    let cmd = match helper {
+        Some(h) => format!("{h} -S {pkg}"),
+        None => format!("your AUR helper (for example: yay -S {pkg})"),
+    };
+    format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name)
+}
+
+/// The sync repository (`extra`, `omarchy`, ...) that carries the installed package `pkg`, or
+/// `None` when no configured repository does (an AUR or locally built package) or pacman can't
+/// be asked.
+fn pacman_repo(pkg: &str) -> Option<String> {
+    let pacman = which("pacman")?;
+    // pacman translates its field names; the C locale keeps "Repository" parseable.
+    let out = process::command(pacman).args(["-Si", "--", pkg]).env("LC_ALL", "C").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_pacman_repo(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The `Repository` field of `pacman -Si` output (the first one, when several repos carry it:
+/// that is the one pacman installs from).
+fn parse_pacman_repo(si: &str) -> Option<String> {
+    si.lines().find_map(|l| {
+        let (key, value) = l.split_once(':')?;
+        (key.trim() == "Repository").then(|| value.trim().to_string()).filter(|r| !r.is_empty())
+    })
 }
 
 /// Removes an installed copy. `phase` hears when the removal has to wait for another install;
@@ -710,7 +748,10 @@ pub(crate) mod linux {
         let root = root && !immutable_ostree();
         let can_deb = root && native == Some(PackageKind::Deb) && which("apt-get").is_some() && which("dpkg").is_some();
         let can_rpm = root && native == Some(PackageKind::Rpm) && which("rpm").is_some();
-        let can_arch = root && native == Some(PackageKind::ArchPkg) && which("pacman").is_some();
+        let can_arch = root
+            && native == Some(PackageKind::ArchPkg)
+            && which("pacman").is_some()
+            && crate::detect::linux::pacman_db_present(Path::new(crate::detect::linux::PACMAN_DB));
         order_available_kinds(is_flatpak, is_appimage, flatpak, can_deb, can_rpm, can_arch)
     }
 
@@ -2090,6 +2131,42 @@ mod tests {
         #[cfg(target_os = "linux")]
         assert_eq!(choose_kinds(Some(&inst(InstallSource::AppImage)), None, &[]), [PackageKind::AppImage]);
         let _ = inst;
+    }
+
+    #[test]
+    fn only_the_release_arch_package_is_updated_by_the_launcher() {
+        let pacman = |name: &str| Installed { version: None, source: InstallSource::Pacman, location: String::new(), package: Some(name.into()) };
+        assert!(is_release_arch_package(&pacman("ai.storyteller.wordcraft")));
+        for aur in ["wordcraft", "wordcraft-bin", "wordcraft-git"] {
+            assert!(!is_release_arch_package(&pacman(aur)), "{aur}");
+        }
+        let app = artcraft_launcher_core::CraftApp::by_id("wordcraft").unwrap();
+        assert_eq!(managed_elsewhere(app, &pacman("ai.storyteller.wordcraft"), false), None);
+        assert_eq!(managed_elsewhere(app, &pacman("wordcraft-bin"), true), None);
+    }
+
+    #[test]
+    fn arch_packages_from_a_repository_are_updated_with_the_system() {
+        let app = artcraft_launcher_core::CraftApp::by_id("wordcraft").unwrap();
+        assert_eq!(
+            pacman_update_hint(app, "wordcraft-bin", Some("omarchy")),
+            "WordCraft was installed from the omarchy repository (wordcraft-bin). Update it with sudo pacman -Syu"
+        );
+        assert!(pacman_update_hint(app, "wordcraft-bin", None).starts_with("WordCraft was installed from the AUR (wordcraft-bin)."));
+
+        let si = "Repository      : omarchy\nName            : wordcraft-bin\nVersion         : 0.6.1-1\n";
+        assert_eq!(parse_pacman_repo(si).as_deref(), Some("omarchy"));
+        assert_eq!(parse_pacman_repo("Name : wordcraft-bin\n"), None);
+        assert_eq!(parse_pacman_repo("Repository :\n"), None);
+    }
+
+    #[test]
+    fn aur_packages_are_not_updated_as_arch_pkg() {
+        let pacman = |name: &str| Installed { version: None, source: InstallSource::Pacman, location: String::new(), package: Some(name.into()) };
+        let app = artcraft_launcher_core::CraftApp::by_id("filmcraft").unwrap();
+        let installed = pacman("filmcraft-bin");
+        assert!(managed_elsewhere(app, &installed, false).is_some());
+        assert!(!choose_kinds(Some(&installed), None, &[]).contains(&PackageKind::ArchPkg));
     }
 
     #[test]
