@@ -502,7 +502,10 @@ fn grid_shows_every_status_and_installs_on_click() {
     // The version sits in the card's top strip, and the date under the description.
     h.get_by_label("0.4.1 → 0.5.0");
     assert!(h.query_all_by_label("v0.4.0").count() >= 2);
-    assert!(h.query_all_by_label("Last updated: 07/10/2026").count() >= 2);
+    // Written like every other date ("Oct 7, 2026"); the day itself depends on the zone the test runs in.
+    let updated: Vec<String> = h.query_all_by_label_contains("Last updated: ").filter_map(|n| n.accesskit_node().value()).collect();
+    assert!(updated.len() >= 2, "{updated:?}");
+    assert!(updated.iter().all(|l| l.starts_with("Last updated: Oct ") && l.ends_with(", 2026")), "{updated:?}");
     // The window has no title bar of its own here (the web build, and the tests).
     assert!(h.query_by_label("Close").is_none());
     assert!(h.query_all_by_label_contains("Discord").count() >= 1); // the footer icon (the header has none)

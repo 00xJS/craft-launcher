@@ -23,17 +23,14 @@ fn ago_text(secs: i64, now: i64) -> String {
         time::TimeAgo::Hours(n) => tn(n, "{n} h ago", "{n} h ago"),
         time::TimeAgo::Yesterday => t("yesterday").to_string(),
         time::TimeAgo::Days(n) => tn(n, "{n} day ago", "{n} days ago"),
-        time::TimeAgo::Date(secs) => {
-            let (y, m, d) = time::civil_from_unix(secs);
-            let month = tr_ctx(current(), "month", time::month_short_en(m));
-            fmt(tl!("{month} {day}, {year}"), &[("month", month), ("day", &d.to_string()), ("year", &y.to_string())])
-        }
+        time::TimeAgo::Date(secs) => date_text(secs),
     }
 }
 
-/// Translate an absolute date ("Oct 8, 2026" → "8 окт. 2026") into the current language.
+/// Translate an absolute date ("Oct 8, 2026" → "8 окт. 2026") into the current language, on this
+/// computer's calendar (`local_time`). Every date the launcher shows is written by this.
 pub(crate) fn date_text(secs: i64) -> String {
-    let (y, m, d) = time::civil_from_unix(secs);
+    let (y, m, d) = crate::local_time::civil(secs);
     let month = tr_ctx(current(), "month", time::month_short_en(m));
     fmt(tl!("{month} {day}, {year}"), &[("month", month), ("day", &d.to_string()), ("year", &y.to_string())])
 }

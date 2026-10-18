@@ -1,7 +1,7 @@
 //! Small pieces of an app card's text: the version in its top strip, and the short description and
 //! last-updated line in its body.
 //!
-//! Invariants: nothing is drawn that has no content; dates are day/month/year.
+//! Invariants: nothing is drawn that has no content; dates come from `views::date_text`.
 
 use artcraft_launcher_core::status::AppStatus;
 use egui::{Color32, FontId, Ui};
@@ -21,11 +21,11 @@ pub(crate) fn strip_version(e: &AppEntry, status: &AppStatus) -> String {
     }
 }
 
-/// "Last updated: 07/10/2026": the date of the app's latest release, when there is one.
+/// "Last updated: Oct 7, 2026": the day of the app's latest release on this computer's calendar,
+/// written like every other date in the launcher.
 pub(crate) fn last_updated(e: &AppEntry) -> Option<String> {
     let at = e.release().and_then(|r| r.published_at)?;
-    let (year, month, day) = artcraft_launcher_core::time::civil_from_unix(at);
-    Some(fmt(tl!("Last updated: {date}"), &[("date", &format!("{day:02}/{month:02}/{year:04}"))]))
+    Some(fmt(tl!("Last updated: {date}"), &[("date", &crate::views::date_text(at))]))
 }
 
 /// `text` in at most `rows` lines, ending in "…" when it is cut.
