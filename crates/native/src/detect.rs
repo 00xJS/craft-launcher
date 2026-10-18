@@ -307,7 +307,7 @@ pub mod linux {
         }
         // Only run `pacman` where its database exists: elsewhere `pacman` on PATH may be an unrelated program
         // (the Pac-Man game in /usr/games on Debian-family systems).
-        if pacman_db_present(Path::new(PACMAN_DB))
+        if has_pacman_db()
             && let Some(list) = capture("pacman", &["-Q"], t)
         {
             add(InstallSource::Pacman, packages::parse_pacman(&list));
@@ -332,6 +332,11 @@ pub mod linux {
     /// True when `db` is a directory, i.e. this system really uses pacman.
     pub(crate) fn pacman_db_present(db: &Path) -> bool {
         db.is_dir()
+    }
+
+    /// True when the system's default pacman database directory exists.
+    pub(crate) fn has_pacman_db() -> bool {
+        pacman_db_present(Path::new(PACMAN_DB))
     }
 
     /// Where a package put the app's binary: on `PATH`, else `/usr/bin/<id>`.
