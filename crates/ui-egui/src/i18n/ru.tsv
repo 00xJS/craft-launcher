@@ -277,6 +277,10 @@ filter	Installed	Установлены
 @msg	{name} installed: {version} (this release publishes no checksum, so only its size was checked)	Приложение {name} установлено: {version} (в этом релизе нет контрольных сумм, поэтому проверен только размер)
 @msg	{name} was removed	Приложение {name} удалено
 @msg	{name} is running. Quit it, then try again.	Приложение {name} запущено. Закройте его и попробуйте снова.
+@msg	{name} was installed from the {repo} repository or the AUR ({pkg}). Update it with {cmd} or sudo pacman -Syu	Приложение {name} установлено из репозитория {repo} или из AUR ({pkg}). Обновите его командой {cmd} или sudo pacman -Syu
+@msg	{name} was installed from the {repo} repository or the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg}) or sudo pacman -Syu	Приложение {name} установлено из репозитория {repo} или из AUR ({pkg}). Обновите его с помощью вашего помощника AUR (например: yay -S {pkg}) или командой sudo pacman -Syu
+@msg	{name} was installed from the AUR ({pkg}). Update it with {cmd}	Приложение {name} установлено из AUR ({pkg}). Обновите его командой {cmd}
+@msg	{name} was installed from the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg})	Приложение {name} установлено из AUR ({pkg}). Обновите его с помощью вашего помощника AUR (например: yay -S {pkg})
 
 # Command IDs for menu items (@id)
 # Format: @id<TAB>command_id<TAB>translation

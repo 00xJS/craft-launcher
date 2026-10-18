@@ -279,6 +279,10 @@ filter	Installed	Instaladas
 @msg	{name} installed: {version} (this release publishes no checksum, so only its size was checked)	{name} instalada: {version} (esta versión no publica la suma de comprobación, así que solo se comprobó su tamaño)
 @msg	{name} was removed	Se quitó {name}
 @msg	{name} is running. Quit it, then try again.	{name} está abierta. Ciérrala y vuelve a intentarlo.
+@msg	{name} was installed from the {repo} repository or the AUR ({pkg}). Update it with {cmd} or sudo pacman -Syu	{name} se instaló desde el repositorio {repo} o AUR ({pkg}). Actualízala con {cmd} o con sudo pacman -Syu
+@msg	{name} was installed from the {repo} repository or the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg}) or sudo pacman -Syu	{name} se instaló desde el repositorio {repo} o AUR ({pkg}). Actualízala con tu asistente de AUR (por ejemplo: yay -S {pkg}) o con sudo pacman -Syu
+@msg	{name} was installed from the AUR ({pkg}). Update it with {cmd}	{name} se instaló desde AUR ({pkg}). Actualízala con {cmd}
+@msg	{name} was installed from the AUR ({pkg}). Update it with your AUR helper (for example: yay -S {pkg})	{name} se instaló desde AUR ({pkg}). Actualízala con tu asistente de AUR (por ejemplo: yay -S {pkg})
 @id	app.install	Instalar
 @id	app.update	Actualizar a {v}
 @id	app.open	Abrir
