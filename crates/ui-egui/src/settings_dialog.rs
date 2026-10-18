@@ -91,20 +91,23 @@ impl LauncherUi {
 
     fn settings_contents(&mut self, ui: &mut Ui, host: &mut dyn Host, wide: bool) {
         // The columns are drawn from two closures that both need `self` and `host`: the pieces
-        // are drawn one after the other, through a cell, never at the same time.
+        // are drawn one after the other, through a cell, never at the same time (were they ever,
+        // the second would be skipped rather than panic).
         let state = std::cell::RefCell::new((&mut *self, host));
         sheet::columns(
             ui,
             wide,
             theme::COLUMN_GAP,
             |ui| {
-                let (this, _) = &mut *state.borrow_mut();
+                let Ok(mut state) = state.try_borrow_mut() else { return };
+                let (this, _) = &mut *state;
                 this.settings_language(ui);
                 this.settings_updates(ui);
                 this.settings_appearance(ui);
             },
             |ui| {
-                let (this, host) = &mut *state.borrow_mut();
+                let Ok(mut state) = state.try_borrow_mut() else { return };
+                let (this, host) = &mut *state;
                 this.settings_install(ui, &mut **host);
                 this.settings_background(ui, &mut **host);
                 this.settings_community(ui);

@@ -228,7 +228,8 @@ impl LauncherUi {
             return (None, None);
         }
         let n = ids.len();
-        (Some(ids[(at + n - 1) % n].to_string()), Some(ids[(at + 1) % n].to_string()))
+        let around = |i: usize| ids.get(i % n).map(|s| (*s).to_string());
+        (around(at + n - 1), around(at + 1))
     }
 
     /// Esc closes the enlarged picture first, then the drawer; ← and → flip through the pictures.

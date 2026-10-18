@@ -3,8 +3,9 @@
 //! [`civil`], which adds the system time zone's offset at that instant (summer time included).
 //!
 //! Invariants: nothing here panics; when the system zone can't be read, dates fall back to UTC.
-//! The desktop asks jiff, which re-reads the zone every few minutes, so a laptop that travels keeps
-//! up; the web build asks the browser.
+//! The desktop looks the zone up at most once every [`RECHECK`], whether that worked or not (a
+//! date is drawn many times a frame), so a laptop that travels keeps up; the web build asks the
+//! browser.
 
 use artcraft_launcher_core::time;
 
@@ -18,17 +19,35 @@ fn civil_at(secs: i64, offset: i64) -> (i64, u32, u32) {
     time::civil_from_unix(secs.saturating_add(offset))
 }
 
+/// How long a looked-up system zone (or the failure to find one) is trusted.
+#[cfg(not(target_arch = "wasm32"))]
+const RECHECK: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Seconds east of UTC in the system's time zone at `secs`; 0 when the zone can't be read.
 #[cfg(not(target_arch = "wasm32"))]
 fn offset(secs: i64) -> i64 {
-    let zone = match jiff::tz::TimeZone::try_system() {
-        Ok(zone) => zone,
-        Err(e) => {
-            log::debug!("couldn't read the system time zone, showing dates in UTC: {e}");
-            return 0;
-        }
-    };
+    let Some(zone) = system_zone() else { return 0 };
     jiff::Timestamp::from_second(secs).map_or(0, |at| i64::from(zone.to_offset(at).seconds()))
+}
+
+/// The system zone, looked up again once [`RECHECK`] has passed. jiff caches only a zone it found,
+/// so without this an unreadable one (a bad `TZ`, a bare container) would be searched for on
+/// every date of every frame.
+#[cfg(not(target_arch = "wasm32"))]
+fn system_zone() -> Option<jiff::tz::TimeZone> {
+    use std::sync::{Mutex, PoisonError};
+    use std::time::Instant;
+    type Cached = Option<(Instant, Option<jiff::tz::TimeZone>)>;
+    static CACHE: Mutex<Cached> = Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, zone)) = cache.as_ref()
+        && at.elapsed() < RECHECK
+    {
+        return zone.clone();
+    }
+    let zone = jiff::tz::TimeZone::try_system().map_err(|e| log::debug!("couldn't read the system time zone, showing dates in UTC: {e}")).ok();
+    *cache = Some((Instant::now(), zone.clone()));
+    zone
 }
 
 /// Seconds east of UTC in the browser's time zone at `secs`; 0 when it gives nothing sensible.
