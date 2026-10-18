@@ -1874,8 +1874,18 @@ fn a_not_installed_card_is_grey_until_the_pointer_is_over_it() {
     };
     assert!(colour(&mut h) <= 8, "a not installed app's icon is grey");
     h.hover_at(egui::pos2(icon.center().x + 120.0, icon.center().y + 60.0));
-    h.run_steps(8);
-    assert!(colour(&mut h) > 40, "the icon shows its colour under the pointer");
+    // The colour picture decodes on a background thread: give it real time, as a slow machine
+    // (CI's Windows runner) needs more than a few frames.
+    let mut shown = 0;
+    for _ in 0..100 {
+        h.run_steps(2);
+        shown = colour(&mut h);
+        if shown > 40 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(shown > 40, "the icon shows its colour under the pointer");
     h.hover_at(egui::pos2(5.0, 400.0));
     h.run_steps(8);
     assert!(colour(&mut h) <= 8, "the colour goes again when the pointer leaves");

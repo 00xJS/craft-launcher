@@ -25,8 +25,14 @@ pub fn app(id: &str) -> Option<ImageSource<'static>> {
 /// A Craft App's icon: in colour, or in greys for an app that is not installed. The grey copy is
 /// made once per app from the same bundled picture and kept in the context.
 pub fn app_image(ctx: &egui::Context, id: &str, in_colour: bool) -> Option<egui::Image<'static>> {
+    let colour = app(id).map(egui::Image::new);
     if in_colour {
-        return app(id).map(egui::Image::new);
+        return colour;
+    }
+    // The colour picture decodes on a background thread the first time it's asked for. Ask now,
+    // while the card is grey, so it is ready when the pointer comes over it (a cache hit after).
+    if let Some(colour) = &colour {
+        let _ = colour.load_for_size(ctx, egui::Vec2::splat(64.0));
     }
     let key = egui::Id::new(("grey-app-icon", id));
     if let Some(texture) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(key)) {
