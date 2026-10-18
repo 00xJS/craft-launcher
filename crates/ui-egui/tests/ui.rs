@@ -1603,10 +1603,8 @@ fn narrow_header_keeps_the_view_switch_clear_of_brand_text() {
                 for label in ["Show apps as cards", "Show apps as a table", "Settings", "Check for updates"] {
                     let rect = h.get_by_label(label).rect();
                     assert!(rect.left() >= 0.0 && rect.right() <= width, "{bar:?} {width}: {label} {rect:?}");
-                    for label in ["Craft App Suite"] {
-                        if let Some(text) = h.query_by_label(label) {
-                            assert!(!rect.intersects(text.rect()), "{bar:?} {width}: {label} overlaps {rect:?}");
-                        }
+                    if let Some(text) = h.query_by_label("Craft App Suite") {
+                        assert!(!rect.intersects(text.rect()), "{bar:?} {width}: Craft App Suite overlaps {label} {rect:?}");
                     }
                 }
                 if bar == TitleBar::Custom {

@@ -190,10 +190,8 @@ fn german_switches_persists_and_keeps_install_actions() {
         for label in ["Show apps as cards", "Show apps as a table", "Settings", "Check for updates"] {
             let rect = web.get_by_label(artcraft_launcher_ui_egui::i18n::t(label)).rect();
             assert!(rect.left() >= 0.0 && rect.right() <= width, "{width}: {label} {rect:?}");
-            for label in ["Craft App Suite"] {
-                if let Some(text) = web.query_by_label(label) {
-                    assert!(!rect.intersects(text.rect()), "{width}: {label} overlaps {rect:?}");
-                }
+            if let Some(text) = web.query_by_label("Craft App Suite") {
+                assert!(!rect.intersects(text.rect()), "{width}: Craft App Suite overlaps {label} {rect:?}");
             }
         }
     }
