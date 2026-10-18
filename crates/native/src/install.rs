@@ -253,9 +253,23 @@ fn record(version: &str, kind: PackageKind, path: PathBuf, files: Vec<PathBuf>, 
 
 /// The package format to install `app` with: the format of the copy that's there (an update
 /// stays a `.deb` update), else the user's choice, else the best this system supports.
-pub fn choose_kinds(app: Option<&CraftApp>, existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
+///
+/// Returns an empty `Vec` when `app` is already installed outside the launcher (such as an AUR
+/// or repository Arch package) and must not be updated or replaced by the launcher.
+pub fn choose_kinds(app: &CraftApp, existing: Option<&Installed>, record: Option<&Record>, preferred: &[PackageKind]) -> Vec<PackageKind> {
     let available = available_kinds();
-    let can_pacman = which("pacman").is_some();
+    let can_pacman = available.contains(&PackageKind::ArchPkg) || can_pacman();
+    choose_kinds_with(app, existing, record, preferred, &available, can_pacman)
+}
+
+pub(crate) fn choose_kinds_with(
+    app: &CraftApp,
+    existing: Option<&Installed>,
+    record: Option<&Record>,
+    preferred: &[PackageKind],
+    available: &[PackageKind],
+    can_pacman: bool,
+) -> Vec<PackageKind> {
     if let Some(inst) = existing {
         let kind = match inst.source {
             InstallSource::Launcher => record.map(|r| r.kind),
@@ -276,25 +290,30 @@ pub fn choose_kinds(app: Option<&CraftApp>, existing: Option<&Installed>, record
             return vec![k];
         }
     }
-    let mut kinds: Vec<PackageKind> = preferred.iter().copied().filter(|k| available.contains(k)).collect();
+    let mut kinds: Vec<PackageKind> =
+        preferred.iter().copied().filter(|k| available.contains(k) || (*k == PackageKind::ArchPkg && can_pacman)).collect();
     for k in available {
-        if !kinds.contains(&k) {
-            kinds.push(k);
+        if !kinds.contains(k) {
+            kinds.push(*k);
         }
     }
     kinds
+}
+
+/// Whether this system has a working pacman installation and pacman database.
+fn can_pacman() -> bool {
+    #[cfg(target_os = "linux")]
+    return which("pacman").is_some() && crate::detect::linux::has_pacman_db();
+    #[cfg(not(target_os = "linux"))]
+    return false;
 }
 
 /// Whether a pacman install is the release's own Arch package rather than an AUR build. The
 /// release names it by the bundle id (`ai.storyteller.<app>`), which no AUR package uses
 /// (they are `<app>`, `<app>-bin` and `<app>-git`), so an AUR helper never mistakes it
 /// for one of its own and rebuilds it from source.
-pub fn is_release_arch_package(app: Option<&CraftApp>, installed: &Installed) -> bool {
-    installed.source == InstallSource::Pacman
-        && installed.package.as_deref().is_some_and(|p| match app {
-            Some(app) => p == app.bundle_id(),
-            None => p.starts_with("ai.storyteller."),
-        })
+pub fn is_release_arch_package(app: &CraftApp, installed: &Installed) -> bool {
+    installed.source == InstallSource::Pacman && installed.package.as_deref() == Some(&app.bundle_id())
 }
 
 /// Package formats this machine can install, best first.
@@ -355,10 +374,14 @@ fn published_checksum(release: &Release, asset: &Asset, http: &Http) -> Result<O
 /// update for a repository package (Omarchy's, Chaotic-AUR, ...), the user's AUR helper (which
 /// builds as the user and can't run behind the password prompt) for anything else.
 pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool) -> Option<String> {
+    managed_elsewhere_with(app, installed, uninstall, pacman_repo)
+}
+
+fn managed_elsewhere_with(app: &CraftApp, installed: &Installed, uninstall: bool, repo_fn: impl Fn(&str) -> Option<String>) -> Option<String> {
     match installed.source {
-        InstallSource::Pacman if !uninstall && !is_release_arch_package(Some(app), installed) => {
+        InstallSource::Pacman if !uninstall && !is_release_arch_package(app, installed) => {
             let pkg = installed.package.clone().unwrap_or_else(|| app.id.to_string());
-            Some(pacman_update_hint(app, &pkg, pacman_repo(&pkg).as_deref()))
+            Some(pacman_update_hint(app, &pkg, repo_fn(&pkg).as_deref()))
         }
         InstallSource::Binary => Some(format!("{} was installed outside the launcher. Update or remove it the way it was installed.", app.name)),
         _ => None,
@@ -368,14 +391,14 @@ pub fn managed_elsewhere(app: &CraftApp, installed: &Installed, uninstall: bool)
 /// How to update an Arch package the launcher doesn't own: `repo` is the sync repository it
 /// comes from, or `None` for a foreign (AUR) package.
 fn pacman_update_hint(app: &CraftApp, pkg: &str, repo: Option<&str>) -> String {
-    if let Some(repo) = repo {
-        return format!("{} was installed from the {repo} repository ({pkg}). Update it with sudo pacman -Syu", app.name);
-    }
     let helper = ["paru", "yay"].into_iter().find(|h| which(h).is_some());
     let cmd = match helper {
         Some(h) => format!("{h} -S {pkg}"),
         None => format!("your AUR helper (for example: yay -S {pkg})"),
     };
+    if let Some(repo) = repo {
+        return format!("{} was installed from the {repo} repository or the AUR ({pkg}). Update it with {cmd} or sudo pacman -Syu", app.name);
+    }
     format!("{} was installed from the AUR ({pkg}). Update it with {cmd}", app.name)
 }
 
@@ -383,16 +406,13 @@ fn pacman_update_hint(app: &CraftApp, pkg: &str, repo: Option<&str>) -> String {
 /// `None` when no configured repository does (an AUR or locally built package) or pacman can't
 /// be asked.
 fn pacman_repo(pkg: &str) -> Option<String> {
-    let pacman = which("pacman")?;
-    let t = std::time::Duration::from_secs(10);
-    // If the package is foreign (from the AUR or a local build), pacman -Qm succeeds:
-    // don't look it up in sync repositories.
-    let mut qm = process::command(&pacman);
-    qm.args(["-Qm", "--", pkg]).env("LC_ALL", "C");
-    if process::run_command(qm, "pacman", t).is_ok() {
+    #[cfg(target_os = "linux")]
+    if !crate::detect::linux::has_pacman_db() {
         return None;
     }
-    // For native packages, ask pacman -Si which configured repository carries it.
+    let pacman = which("pacman")?;
+    let t = std::time::Duration::from_secs(5);
+    // For packages carried by a configured sync repository, ask pacman -Si which repo carries it.
     // pacman translates its field names; the C locale keeps "Repository" parseable.
     let mut si = process::command(&pacman);
     si.args(["-Si", "--", pkg]).env("LC_ALL", "C");
@@ -2130,16 +2150,17 @@ mod tests {
     #[test]
     fn updates_keep_the_installed_format() {
         let inst = |source| Installed { version: None, source, location: String::new(), package: None };
+        let app = artcraft_launcher_core::CraftApp::by_id("photocraft").unwrap();
         let available = available_kinds();
         if let Some(first) = available.first() {
-            assert_eq!(choose_kinds(None, None, None, &[]).first(), Some(first));
+            assert_eq!(choose_kinds(app, None, None, &[]).first(), Some(first));
         }
         #[cfg(target_os = "macos")]
-        assert_eq!(choose_kinds(None, Some(&inst(InstallSource::MacApp)), None, &[]), [PackageKind::Dmg]);
+        assert_eq!(choose_kinds(app, Some(&inst(InstallSource::MacApp)), None, &[]), [PackageKind::Dmg]);
         #[cfg(windows)]
-        assert_eq!(choose_kinds(None, Some(&inst(InstallSource::Msi)), None, &[]), [PackageKind::Msi]);
+        assert_eq!(choose_kinds(app, Some(&inst(InstallSource::Msi)), None, &[]), [PackageKind::Msi]);
         #[cfg(target_os = "linux")]
-        assert_eq!(choose_kinds(None, Some(&inst(InstallSource::AppImage)), None, &[]), [PackageKind::AppImage]);
+        assert_eq!(choose_kinds(app, Some(&inst(InstallSource::AppImage)), None, &[]), [PackageKind::AppImage]);
         let _ = inst;
     }
 
@@ -2147,24 +2168,23 @@ mod tests {
     fn only_the_release_arch_package_is_updated_by_the_launcher() {
         let pacman = |name: &str| Installed { version: None, source: InstallSource::Pacman, location: String::new(), package: Some(name.into()) };
         let app = artcraft_launcher_core::CraftApp::by_id("wordcraft").unwrap();
-        assert!(is_release_arch_package(Some(app), &pacman("ai.storyteller.wordcraft")));
-        assert!(is_release_arch_package(None, &pacman("ai.storyteller.wordcraft")));
+        assert!(is_release_arch_package(app, &pacman("ai.storyteller.wordcraft")));
         for aur in ["wordcraft", "wordcraft-bin", "wordcraft-git"] {
-            assert!(!is_release_arch_package(Some(app), &pacman(aur)), "{aur}");
-            assert!(!is_release_arch_package(None, &pacman(aur)), "{aur}");
+            assert!(!is_release_arch_package(app, &pacman(aur)), "{aur}");
         }
-        assert_eq!(managed_elsewhere(app, &pacman("ai.storyteller.wordcraft"), false), None);
-        assert_eq!(managed_elsewhere(app, &pacman("wordcraft-bin"), true), None);
+        assert_eq!(managed_elsewhere_with(app, &pacman("ai.storyteller.wordcraft"), false, |_| None), None);
+        assert_eq!(managed_elsewhere_with(app, &pacman("wordcraft-bin"), true, |_| None), None);
     }
 
     #[test]
     fn arch_packages_from_a_repository_are_updated_with_the_system() {
         let app = artcraft_launcher_core::CraftApp::by_id("wordcraft").unwrap();
-        assert_eq!(
-            pacman_update_hint(app, "wordcraft-bin", Some("omarchy")),
-            "WordCraft was installed from the omarchy repository (wordcraft-bin). Update it with sudo pacman -Syu"
-        );
-        assert!(pacman_update_hint(app, "wordcraft-bin", None).starts_with("WordCraft was installed from the AUR (wordcraft-bin)."));
+        let hint = pacman_update_hint(app, "wordcraft-bin", Some("omarchy"));
+        assert!(hint.starts_with("WordCraft was installed from the omarchy repository or the AUR (wordcraft-bin)."));
+        assert!(hint.ends_with("or sudo pacman -Syu"));
+
+        let aur_hint = pacman_update_hint(app, "wordcraft-bin", None);
+        assert!(aur_hint.starts_with("WordCraft was installed from the AUR (wordcraft-bin)."));
 
         let si = "Repository      : omarchy\nName            : wordcraft-bin\nVersion         : 0.6.1-1\n";
         assert_eq!(parse_pacman_repo(si).as_deref(), Some("omarchy"));
@@ -2177,9 +2197,9 @@ mod tests {
         let pacman = |name: &str| Installed { version: None, source: InstallSource::Pacman, location: String::new(), package: Some(name.into()) };
         let app = artcraft_launcher_core::CraftApp::by_id("filmcraft").unwrap();
         let installed = pacman("filmcraft-bin");
-        assert!(managed_elsewhere(app, &installed, false).is_some());
-        assert_eq!(choose_kinds(Some(app), Some(&installed), None, &[]), Vec::<PackageKind>::new());
-        assert_eq!(choose_kinds(Some(app), Some(&installed), None, &[PackageKind::ArchPkg]), Vec::<PackageKind>::new());
+        assert!(managed_elsewhere_with(app, &installed, false, |_| None).is_some());
+        assert_eq!(choose_kinds_with(app, Some(&installed), None, &[], &[], false), Vec::<PackageKind>::new());
+        assert_eq!(choose_kinds_with(app, Some(&installed), None, &[PackageKind::ArchPkg], &[PackageKind::ArchPkg], true), Vec::<PackageKind>::new());
     }
 
     #[test]
@@ -2187,10 +2207,16 @@ mod tests {
         let pacman = |name: &str| Installed { version: None, source: InstallSource::Pacman, location: String::new(), package: Some(name.into()) };
         let app = artcraft_launcher_core::CraftApp::by_id("filmcraft").unwrap();
         let installed = pacman("ai.storyteller.filmcraft");
-        assert_eq!(managed_elsewhere(app, &installed, false), None);
-        if which("pacman").is_some() {
-            assert_eq!(choose_kinds(Some(app), Some(&installed), None, &[]), vec![PackageKind::ArchPkg]);
-        }
+        assert_eq!(managed_elsewhere_with(app, &installed, false, |_| None), None);
+        assert_eq!(choose_kinds_with(app, Some(&installed), None, &[], &[], true), vec![PackageKind::ArchPkg]);
+        assert_eq!(choose_kinds_with(app, Some(&installed), None, &[], &[PackageKind::ArchPkg], false), vec![PackageKind::ArchPkg]);
+    }
+
+    #[test]
+    fn preferred_arch_package_honoured_when_can_pacman() {
+        let app = artcraft_launcher_core::CraftApp::by_id("filmcraft").unwrap();
+        assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[], true), vec![PackageKind::ArchPkg]);
+        assert_eq!(choose_kinds_with(app, None, None, &[PackageKind::ArchPkg], &[], false), Vec::<PackageKind>::new());
     }
 
     #[test]
